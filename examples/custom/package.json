@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "dependencies": {
-    "@morlay/better-session": "^0.0.10",
+    "@morlay/better-session": "^0.0.11",
     "@morlay/dsh-llm-openai-compatible": "^0.0.1"
   },
   "devDependencies": {
