@@ -76,3 +76,65 @@ func TestCopyDirDerefIgnores(t *testing.T) {
 		t.Error("ignored-dir 不应被复制（ignored）")
 	}
 }
+
+// TestCopyDirDerefBreaksSymlinkCycle：peer 互相链接（cordis ↔
+// cordis-plugin-include 之类）在 node_modules 里形成的 symlink 环必须被
+// 打破，解引用复制不能无限递归。
+func TestCopyDirDerefBreaksSymlinkCycle(t *testing.T) {
+	src := t.TempDir()
+	// a/pkg 与 b/pkg 互相链接：a/pkg/node_modules/b → b/pkg，
+	// b/pkg/node_modules/a → a/pkg（相对链接，模拟 pnpm 嵌套 peer 安装）。
+	a := filepath.Join(src, "a", "pkg")
+	b := filepath.Join(src, "b", "pkg")
+	if err := os.MkdirAll(filepath.Join(a, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(b, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(a, "package.json"), []byte(`{"name":"a"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(b, "package.json"), []byte(`{"name":"b"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	relA, err := filepath.Rel(filepath.Join(b, "node_modules"), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relB, err := filepath.Rel(filepath.Join(a, "node_modules"), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(relA, filepath.Join(b, "node_modules", "a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(relB, filepath.Join(a, "node_modules", "b")); err != nil {
+		t.Fatal(err)
+	}
+
+	// 外层 node_modules 引用 a（解引用后进入环）。
+	nm := filepath.Join(src, "node_modules")
+	if err := os.MkdirAll(nm, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	relPkgA, err := filepath.Rel(nm, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(relPkgA, filepath.Join(nm, "a")); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := t.TempDir()
+	if err := CopyDirDeref(nm, dst, nil, nil); err != nil {
+		t.Fatalf("解引用复制遇到 symlink 环应终止而非递归: %v", err)
+	}
+	// a 的内容应落盘（环只跳过回环部分，不吞掉实体）。
+	if _, err := os.Stat(filepath.Join(dst, "a", "package.json")); err != nil {
+		t.Errorf("a/package.json 应被复制: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "a", "node_modules", "b", "package.json")); err != nil {
+		t.Errorf("环内 b/package.json 应被复制（首次进入）: %v", err)
+	}
+}

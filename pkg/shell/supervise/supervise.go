@@ -17,6 +17,7 @@ package supervise
 import (
 	"context"
 	"log"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -64,8 +65,9 @@ func Run(ctx context.Context, exeDir, profile, port, dshHome string, win *applic
 			writePidFile(dshHome, p.Pid())
 			if gw != nil {
 				gw.SetTarget(url)
-				log.Printf("dsh server ready at %s（经网关 %s）", url, viewURL(gw))
-				win.SetURL(viewURL(gw))
+				view := viewURL(gw, url)
+				log.Printf("dsh server ready at %s（经网关 %s）", url, view)
+				win.SetURL(view)
 			} else {
 				log.Printf("dsh server ready at %s", url)
 				win.SetURL(url)
@@ -98,7 +100,14 @@ func Run(ctx context.Context, exeDir, profile, port, dshHome string, win *applic
 	}
 }
 
-// viewURL 返回窗口加载地址（网关根路径）。
-func viewURL(gw *gateway.Gateway) string {
-	return "http://127.0.0.1:" + strconv.Itoa(gw.Port()) + "/"
+// viewURL 返回窗口加载地址：网关根路径 + 后端 ready URL 的完整 query
+// 透传（认证 token 等全部参数）。WebView 首次加载带 query，经网关反代
+// （Host/Origin 改写为后端）触发 dsh 认证，Set-Cookie 落库后后续请求走
+// cookie。
+func viewURL(gw *gateway.Gateway, backendURL string) string {
+	view := "http://127.0.0.1:" + strconv.Itoa(gw.Port()) + "/"
+	if u, err := url.Parse(backendURL); err == nil && u.RawQuery != "" {
+		view += "?" + u.RawQuery
+	}
+	return view
 }

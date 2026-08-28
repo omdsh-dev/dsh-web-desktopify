@@ -15,7 +15,6 @@ import (
 
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/config"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/fsutil"
-	"github.com/omdsh-dev/dsh-web-desktopify/internal/profile"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/tools"
 )
 
@@ -85,10 +84,6 @@ func SeaExe(ws string, cfg *config.Config) string {
 // Build 执行一次完整的 SEA 打包，返回 SEA 可执行文件路径。
 // 全部产物（暂存、工具链、可执行）都位于工作区 target/ 下。
 func Build(ws string, cfg *config.Config, skipInstall bool) (string, error) {
-	profileDir, err := profile.Ensure(ws, skipInstall)
-	if err != nil {
-		return "", err
-	}
 	if _, err := tools.Ensure(ws); err != nil {
 		return "", err
 	}
@@ -101,10 +96,23 @@ func Build(ws string, cfg *config.Config, skipInstall bool) (string, error) {
 		return "", fmt.Errorf("mkdir staging: %w", err)
 	}
 
-	// 1) 闭包：profile node_modules → sea/node_modules（解引用，过滤异平台原生二进制）。
-	nmSrc := filepath.Join(profileDir, "node_modules")
+	// 1) 闭包：target/<name>/deploy/node_modules（pnpm deploy --prod 生成的
+	// 自包含生产闭包）。缺失时自动执行 deploy（含修正 workspace 配置与补
+	// install）。保留链接（deploy 闭包的相对链接指向自身 .pnpm，自包含
+	// 无逃逸）。
+	deployRoot := config.DeployDir(ws, cfg)
+	deployNM := filepath.Join(deployRoot, "node_modules")
+	if _, err := os.Stat(deployNM); err != nil {
+		if !skipInstall {
+			if _, err := DeployClosure(ws, cfg); err != nil {
+				return "", err
+			}
+		} else {
+			return "", fmt.Errorf("deploy 闭包缺失 %s（--skip-install 下不自动 deploy；先跑 pnpm deploy --filter=%s --prod %s）: %w", deployNM, cfg.Name, deployRoot, err)
+		}
+	}
 	nmDst := filepath.Join(staging, "node_modules")
-	if err := fsutil.CopyDirDeref(nmSrc, nmDst, skipEntries, fsutil.NativeSkip); err != nil {
+	if err := fsutil.CopyDir(deployNM, nmDst); err != nil {
 		return "", fmt.Errorf("copy closure: %w", err)
 	}
 
@@ -113,8 +121,13 @@ func Build(ws string, cfg *config.Config, skipInstall bool) (string, error) {
 		return "", fmt.Errorf("write dsh-bridge: %w", err)
 	}
 
-	// 3) 资源：dsh 主包的 config/ 与 package.json。
-	dshPkg := profile.DshPkgDir(profileDir)
+	// 3) 资源：dsh 主包的 config/ 与 package.json（从闭包内 dsh 实体取，
+	// 实体在 .pnpm 虚拟存储，顶层 @deepseek-ai/dsh 是指向它的链接）。
+	dshLink := filepath.Join(nmDst, "@deepseek-ai", "dsh")
+	dshPkg, err := filepath.EvalSymlinks(dshLink)
+	if err != nil {
+		return "", fmt.Errorf("解析闭包内 dsh 实体: %w", err)
+	}
 	if err := fsutil.CopyDir(filepath.Join(dshPkg, "config"), filepath.Join(staging, "config")); err != nil {
 		return "", fmt.Errorf("copy config: %w", err)
 	}

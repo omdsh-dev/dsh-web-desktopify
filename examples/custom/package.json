@@ -4,9 +4,7 @@
   "private": true,
   "dependencies": {
     "@morlay/better-session": "^0.0.11",
-    "@morlay/dsh-llm-openai-compatible": "^0.0.1"
-  },
-  "devDependencies": {
+    "@morlay/dsh-llm-openai-compatible": "^0.0.1",
     "@deepseek-ai/dsh": "0.1.1-rc.2"
   },
   "dsh": {

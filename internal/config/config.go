@@ -42,6 +42,9 @@ type Config struct {
 	Version string
 	// Bundles 复用 package.json 的 dsh.profile.bundles。
 	Bundles []string
+	// Files 复用 package.json 的 files：DSH_HOME 种子只复制白名单条目
+	// （外加 package.json 与 node_modules），其余工作区内容不进产物。
+	Files []string
 	// Dependencies 是 profile 的依赖声明（package.json）。
 	Dependencies map[string]string
 	// Desktop 是 dsh.desktop 特有配置。
@@ -53,6 +56,7 @@ type manifest struct {
 	Name         string            `json:"name"`
 	Version      string            `json:"version"`
 	Private      bool              `json:"private"`
+	Files        []string          `json:"files"`
 	Dependencies map[string]string `json:"dependencies"`
 	DSH          struct {
 		Profile struct {
@@ -84,6 +88,7 @@ func Load(ws string) (*Config, error) {
 		Name:         m.Name,
 		Version:      m.Version,
 		Bundles:      m.DSH.Profile.Bundles,
+		Files:        m.Files,
 		Dependencies: m.Dependencies,
 		Desktop:      m.DSH.Desktop,
 	}
@@ -124,6 +129,12 @@ func BuildDir(ws string, cfg *Config) string {
 // SeaDir 返回 SEA 打包暂存目录（target/<name>/sea）。
 func SeaDir(ws string, cfg *Config) string {
 	return filepath.Join(BuildDir(ws, cfg), "sea")
+}
+
+// DeployDir 返回 pnpm deploy 闭包目录（target/<name>/deploy）。
+// 与 sea/、.app、dsh-home 隔离，避免重复打包互相清除。
+func DeployDir(ws string, cfg *Config) string {
+	return filepath.Join(BuildDir(ws, cfg), "deploy")
 }
 
 // DSHHomeDir 返回构建出的 DSH_HOME 种子目录（target/<name>/dsh-home）。

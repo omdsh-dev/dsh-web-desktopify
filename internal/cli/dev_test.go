@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/omdsh-dev/dsh-web-desktopify/internal/bundle"
 )
 
 // TestToolFingerprint：源码树完整时产出 src 指纹且稳定；源码树缺失/不
@@ -92,7 +94,8 @@ func TestEnsureDevHomeFresh(t *testing.T) {
 }
 
 // TestWorkspaceHashIgnoresDevStore：.dsh-store（dev 运行时目录）不参与
-// 工作区 hash——dev 会话数据变化不会破坏 bundle 增量缓存。
+// 工作区 hash——dev 会话数据变化不会破坏 bundle 增量缓存。白名单模式下
+// .dsh-store 不在白名单，天然排除（用与 Bundle 一致的 ignored 判定）。
 func TestWorkspaceHashIgnoresDevStore(t *testing.T) {
 	ws := t.TempDir()
 	for _, f := range []string{"package.json", "cordis.patch.yml"} {
@@ -100,7 +103,13 @@ func TestWorkspaceHashIgnoresDevStore(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	h1, err := workspaceHash(ws, hashSkip, nil)
+	ignored := func(rel string, isDir bool) bool {
+		if rel == "node_modules" || strings.HasPrefix(rel, "node_modules/") {
+			return true
+		}
+		return !bundle.SeedAllow(nil)(rel, isDir)
+	}
+	h1, err := workspaceHash(ws, hashSkip, ignored)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +120,7 @@ func TestWorkspaceHashIgnoresDevStore(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ws, ".dsh-store", "settings.yaml"), []byte("y"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	h2, err := workspaceHash(ws, hashSkip, nil)
+	h2, err := workspaceHash(ws, hashSkip, ignored)
 	if err != nil {
 		t.Fatal(err)
 	}
