@@ -76,11 +76,20 @@ func (g *Gateway) SetTarget(host string) {
 }
 
 // parseTarget 解析后端地址：无 scheme 时补 http://（接受纯 host 或完整 URL）。
+// 返回的 target 去掉 query——认证 token 等由浏览器 URL 携带（网关转发时
+// 保留 In 的 query），target 只作为后端 origin，避免 SetURL 把 target 的
+// query 与请求 query 合并导致 token 重复（dsh 认证拒绝重复 token）。
 func parseTarget(host string) (*url.URL, error) {
 	if !strings.Contains(host, "://") {
 		host = "http://" + host
 	}
-	return url.Parse(host)
+	u, err := url.Parse(host)
+	if err != nil {
+		return nil, err
+	}
+	u.RawQuery = ""
+	u.ForceQuery = false
+	return u, nil
 }
 
 // SetMessageProcessor 设置 wails IPC 处理器（Transport.Start 时注入）。
@@ -223,10 +232,15 @@ func (g *Gateway) route(w http.ResponseWriter, r *http.Request, target *url.URL)
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
-			// 保留原始 Host（网关端口）：dsh 的 /api browser-trust 栅栏要求
-			// Origin 与 Host 同 host（含端口）。页面 origin 是网关端口，Host
-			// 保持网关端口则两者一致，栅栏放行；改成后端地址会被拒。
-			pr.Out.Host = pr.In.Host
+			// 后端认证（browser-auth）把 Host 作为 cookie 名与签名 audience：
+			// token 的 authority 是后端端口。网关转发时把 Host 设为后端，
+			// 并把浏览器 Origin（网关）改写为后端——dsh 的 /api trust 栅栏
+			// 要求 Origin 与 Host 同 host，两侧对齐后端才能同时通过信任栅栏
+			// 与 token 认证。
+			pr.Out.Host = target.Host
+			if origin := pr.Out.Header.Get("Origin"); origin != "" {
+				pr.Out.Header.Set("Origin", target.Scheme+"://"+target.Host)
+			}
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			ct := resp.Header.Get("Content-Type")

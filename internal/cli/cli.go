@@ -14,7 +14,6 @@ import (
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/bundle"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/config"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/fsutil"
-	"github.com/omdsh-dev/dsh-web-desktopify/internal/gitignore"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/profile"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/sea"
 )
@@ -189,13 +188,17 @@ func Bundle(ws, platform string, force, install, skipInstall bool) (string, erro
 		return "", err
 	}
 
-	// 工作区 .gitignore：被忽略的内容（构建产物、缓存等）不参与 hash，
-	// 也不进 DSH_HOME 种子（bundle 内部同规则）。
-	gi, err := gitignore.Load(ws)
-	if err != nil {
-		return "", fmt.Errorf("load .gitignore: %w", err)
+	// 工作区内容白名单：package.json + files 字段（+ node_modules 指纹
+	// 单独纳入）。被白名单排除的内容（构建产物、缓存、锁文件等）不参与
+	// hash，也不进 DSH_HOME 种子（bundle 内部同规则，见 SeedAllow）。
+	allow := bundle.SeedAllow(cfg.Files)
+	hashIgnored := func(rel string, isDir bool) bool {
+		// node_modules 由 ClosureFingerprint 单独指纹，不参与 dir hash。
+		if rel == "node_modules" || strings.HasPrefix(rel, "node_modules/") {
+			return true
+		}
+		return !allow(rel, isDir)
 	}
-	hashIgnored := gi.Ignored
 
 	// CLI/壳源码指纹：代码变更后旧产物不再复用（见 toolFingerprint）。
 	tool := toolFingerprint(root)
@@ -332,16 +335,12 @@ func workspaceHash(ws string, hashSkip map[string]bool, hashIgnored func(rel str
 	return h + ":" + fp, nil
 }
 
-// hashSkip 是工作区 dir hash 排除的名字（安装簿记与运行时生成物；
-// pnpm-lock.yaml 锁定依赖闭包，必须参与 hash）。
+// hashSkip 是工作区 dir hash 里"总是跳过"的名字（即使 files 白名单
+// 列出也不参与 hash）：VCS 元数据与跨平台噪音。node_modules 不在此列
+// 的必要性已由白名单 hashIgnored 覆盖（ClosureFingerprint 单独指纹）。
 var hashSkip = map[string]bool{
-	".git":         true,
-	"node_modules": true,
-	".store":       true,
-	".DS_Store":    true,
-	"cordis.yml":   true,
-	// dev 运行时目录（每次 dev 重建），不参与 bundle 增量缓存。
-	".dsh-store": true,
+	".git":      true,
+	".DS_Store": true,
 }
 
 // platformName 返回当前平台的 canonical 名（os/arch）。

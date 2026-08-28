@@ -51,6 +51,11 @@ func Resolve(cfg appconfig.Config, exeDir string) (string, error) {
 		if err := ensureSeed(seed, dst, cfg.Profile); err != nil {
 			return "", err
 		}
+		// 工作区级 bundle（@morlay/* 等）不在 app 安装闭包，上游 heal 不会
+		// 链接它们——这里补上，否则后端 cordis:include 解析不到插件。
+		if err := HealBundleFallback(dst, cfg.Profile, exeDir); err != nil {
+			return "", fmt.Errorf("补齐 bundle fallback: %w", err)
+		}
 		return dst, nil
 	default:
 		dst := cfg.DSHHome
@@ -59,6 +64,9 @@ func Resolve(cfg appconfig.Config, exeDir string) (string, error) {
 		}
 		if err := ensureSeed(seed, dst, cfg.Profile); err != nil {
 			return "", err
+		}
+		if err := HealBundleFallback(dst, cfg.Profile, exeDir); err != nil {
+			return "", fmt.Errorf("补齐 bundle fallback: %w", err)
 		}
 		return dst, nil
 	}

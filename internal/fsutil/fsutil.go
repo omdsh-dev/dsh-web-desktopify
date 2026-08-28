@@ -76,6 +76,33 @@ func CopyDir(src, dst string) error {
 // 若目标目录位于源内部（例如产物写回工作区），复制会跳过目标自身的
 // 子树，避免把复制中的内容递归包含进来（不依赖任何目录名约定）。
 func CopyDirDeref(src, dst string, skip map[string]bool, ignored func(rel string, isDir bool) bool) error {
+	return copyDirDeref(src, dst, skip, ignored, make(map[string]bool))
+}
+
+// copyDirDeref 是 CopyDirDeref 的递归实现。seen 记录本次复制已落盘的
+// 目录 realpath（全局去重，不随递归返回移除）：同一 realpath 目录
+// （pnpm 嵌套安装下同一包版本被多个消费者的 node_modules 分别引用，如
+// cordis 同时出现在 cordis-plugin-hmr/-timer/-include 的 node_modules 下）
+// 只复制一份。这同时打破 peer 互相链接（cordis ↔ cordis-plugin-include）
+// 或工作区 node_modules 指向自身 .dsh-store 的 symlink 环——无限递归的
+// 两类根源。跳过后续位置不影响运行时解析：Node 的 node_modules 向上
+// 查找会命中已落盘的父级副本。
+func copyDirDeref(
+	src, dst string,
+	skip map[string]bool,
+	ignored func(rel string, isDir bool) bool,
+	seen map[string]bool,
+) error {
+	real, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		real = src
+	}
+	if seen[real] {
+		return nil
+	}
+	seen[real] = true
+	defer delete(seen, real)
+
 	// 目标相对源的前缀（仅当目标在源内部时非空）。
 	selfPrefix := ""
 	if rel, err := filepath.Rel(src, dst); err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".." && !filepath.IsAbs(rel) {
@@ -101,7 +128,10 @@ func CopyDirDeref(src, dst string, skip map[string]bool, ignored func(rel string
 			}
 			return nil
 		}
-		if skip[filepath.Base(path)] || (ignored != nil && ignored(slashRel, info.IsDir())) {
+		// 根目录（rel == "."）是遍历起点，永远不按 skip/ignored 跳过——
+		// 否则白名单 ignored（如 SeedAllow 对非白名单返回 true）会把整个
+		// 源目录 SkipDir，什么都不复制。
+		if slashRel != "." && (skip[filepath.Base(path)] || (ignored != nil && ignored(slashRel, info.IsDir()))) {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}
@@ -115,7 +145,7 @@ func CopyDirDeref(src, dst string, skip map[string]bool, ignored func(rel string
 			if !filepath.IsAbs(link) {
 				link = filepath.Join(filepath.Dir(path), link)
 			}
-			return copyDeref(link, target)
+			return copyDeref(link, target, seen)
 		}
 		if info.IsDir() {
 			return os.MkdirAll(target, 0o755)
@@ -125,25 +155,41 @@ func CopyDirDeref(src, dst string, skip map[string]bool, ignored func(rel string
 }
 
 // copyDeref 复制一个路径（若为 symlink 则解引用），目标按实体落盘。
-func copyDeref(src, dst string) error {
-	info, err := os.Lstat(src)
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		link, err := os.Readlink(src)
+// seen 与 copyDirDeref 共享：解引用链上的 realpath 若已复制过则跳过
+// （peer 互相链接 cordis ↔ cordis-plugin-include 等），链内 realpath 也
+// 去重，防 symlink 直接成环（A → B → A）导致循环空转。
+func copyDeref(src, dst string, seen map[string]bool) error {
+	cur := src
+	chain := make(map[string]bool)
+	for {
+		info, err := os.Lstat(cur)
 		if err != nil {
 			return err
 		}
-		if !filepath.IsAbs(link) {
-			link = filepath.Join(filepath.Dir(src), link)
+		if info.Mode()&os.ModeSymlink != 0 {
+			real, err := filepath.EvalSymlinks(cur)
+			if err != nil {
+				real = cur
+			}
+			if seen[real] || chain[real] {
+				return nil
+			}
+			chain[real] = true
+			link, err := os.Readlink(cur)
+			if err != nil {
+				return err
+			}
+			if !filepath.IsAbs(link) {
+				link = filepath.Join(filepath.Dir(cur), link)
+			}
+			cur = link
+			continue
 		}
-		return copyDeref(link, dst)
+		if info.IsDir() {
+			return copyDirDeref(cur, dst, nil, nil, seen)
+		}
+		return CopyFile(cur, dst)
 	}
-	if info.IsDir() {
-		return CopyDirDeref(src, dst, nil, nil)
-	}
-	return CopyFile(src, dst)
 }
 
 // RemoveAll 递归删除目录，带重试：macOS APFS 上删除大目录偶发
@@ -175,7 +221,8 @@ func DirHash(root string, skip map[string]bool, ignored func(rel string, isDir b
 		if err != nil {
 			return err
 		}
-		if skip[d.Name()] || (ignored != nil && ignored(filepath.ToSlash(rel), d.IsDir())) {
+		// 根目录（rel == "."）是遍历起点，不按 skip/ignored 跳过。
+		if rel != "." && (skip[d.Name()] || (ignored != nil && ignored(filepath.ToSlash(rel), d.IsDir()))) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}

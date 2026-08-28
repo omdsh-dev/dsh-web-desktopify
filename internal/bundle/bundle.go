@@ -15,14 +15,47 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
 
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/config"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/fsutil"
-	"github.com/omdsh-dev/dsh-web-desktopify/internal/gitignore"
 )
+
+// SeedAllow 构造 DSH_HOME 种子的文件白名单判定。白名单 = package.json +
+// node_modules + cordis.patch.yml（profile patch 层，恒必需）+ package.json
+// 的 files 字段；其余工作区内容（target/、.dsh-store、锁文件、git 元数据
+// 等）一律不进种子。返回的回调按 CopyDirDeref / DirHash 的 ignored 语义
+// 工作：rel（/ 分隔）命中白名单时返回 true（保留），目录命中即保留整棵
+// 子树（files 里列目录的 npm 语义）。
+func SeedAllow(files []string) func(rel string, isDir bool) bool {
+	allowed := map[string]bool{
+		"package.json":     true,
+		"node_modules":     true,
+		"cordis.patch.yml": true,
+	}
+	for _, f := range files {
+		f = path.Clean(f)
+		if f == "." || f == "" || path.IsAbs(f) || strings.HasPrefix(f, "../") {
+			continue // 非法 / 越界条目忽略
+		}
+		allowed[f] = true
+	}
+	return func(rel string, isDir bool) bool {
+		if allowed[rel] {
+			return true
+		}
+		// 祖先目录命中（files: ["lib"] → lib/sub/x.js 也保留）。
+		for p := path.Dir(rel); p != "." && p != "/"; p = path.Dir(p) {
+			if allowed[p] {
+				return true
+			}
+		}
+		return false
+	}
+}
 
 // appConfig 与壳的 appconfig.json 结构一致（壳读取）。
 type appConfig struct {
@@ -37,24 +70,6 @@ type appConfig struct {
 	} `json:"window"`
 	Profile string `json:"profile"`
 	DSHHome string `json:"dshHome"`
-}
-
-// seedSkip 是复制 DSH_HOME 种子时排除的名字（安装簿记、工程文件与运行时
-// 用户数据；basename 命中即跳过）。
-var seedSkip = map[string]bool{
-	".nub-store":          true,
-	".store":              true,
-	".nub":                true,
-	".modules.yaml":       true,
-	".npmrc":              true,
-	"pnpm-workspace.yaml": true,
-	"pnpm-lock.yaml":      true,
-	// 运行时用户数据不进种子（由应用在目标 DSH_HOME 生成）。
-	"settings.yaml": true,
-	"storages":      true,
-	"sessions":      true,
-	// dev 运行时目录（工作区 .dsh-store）：内含指向工作区的符号链接，复制会递归。
-	".dsh-store": true,
 }
 
 // Inputs 是一次装配的全部输入。
@@ -126,24 +141,24 @@ func assembleLayout(in Inputs, appRoot string) (string, error) {
 	}
 
 	// DSH_HOME 种子：工作区 → appRoot/dsh-home/profiles/web（解引用）。
-	// 遵循工作区 .gitignore；node_modules 例外（SEA 运行时需要依赖闭包）。
+	// 白名单 = package.json + package.json 的 files 字段；node_modules 不
+	// 进种子——dsh 运行时从安装闭包（SEA 的 Contents/node_modules）经
+	// 双锚点解析 bundle 依赖，profile 私有 node_modules 只放 pnpm-managed
+	// 插件（见 app-boot profile.ts），种子带了会遮蔽安装闭包的解析。
 	homeRoot := filepath.Join(appRoot, "dsh-home")
+	profileDir := filepath.Join(homeRoot, "profiles", config.ProfileName)
 	if err := os.MkdirAll(filepath.Join(homeRoot, "profiles"), 0o755); err != nil {
 		return "", err
 	}
-	gi, err := gitignore.Load(in.Workspace)
-	if err != nil {
-		return "", fmt.Errorf("load .gitignore: %w", err)
-	}
+	allow := SeedAllow(in.Cfg.Files)
 	seedIgnored := func(rel string, isDir bool) bool {
+		// node_modules 不进种子（运行时从安装闭包解析）。
 		if rel == "node_modules" || strings.HasPrefix(rel, "node_modules/") {
-			// node_modules 例外，但过滤与当前平台无关的原生二进制。
-			inner := strings.TrimPrefix(rel, "node_modules/")
-			return inner != "" && fsutil.NativeSkip(inner, isDir)
+			return true
 		}
-		return gi.Ignored(rel, isDir)
+		return !allow(rel, isDir)
 	}
-	if err := fsutil.CopyDirDeref(in.Workspace, filepath.Join(homeRoot, "profiles", config.ProfileName), seedSkip, seedIgnored); err != nil {
+	if err := fsutil.CopyDirDeref(in.Workspace, profileDir, nil, seedIgnored); err != nil {
 		return "", fmt.Errorf("copy dsh-home seed: %w", err)
 	}
 	// 种子指纹：工作区内容 hash，壳启动时比对，避免每次全量复制闭包。
