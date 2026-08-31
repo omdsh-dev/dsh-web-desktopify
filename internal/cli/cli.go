@@ -35,6 +35,8 @@ const usage = `dsh-web-desktopify — 把 dsh 的 --profile web 与 cordis.patch
   --install            打包后安装到当前平台（macOS /Applications、
                        Linux XDG data + .desktop、Windows %LOCALAPPDATA%\Programs）
   --skip-install       跳过依赖安装（使用已有安装）
+  --empty-home         dev 时整目录重建 .dsh-store（清空用户运行时数据；
+                       缺省保留已有数据，只补缺失布局）
   --workspace=<path>   plugin add 的目标工作区（缺省当前目录）
   --profile=<name>     plugin add 兼容 dsh 写法；desktop 只有 web，仅接受 web
 
@@ -46,7 +48,8 @@ const usage = `dsh-web-desktopify — 把 dsh 的 --profile web 与 cordis.patch
 
 settings.yaml 等用户运行时数据不属于工作区：打包应用按 dshHome 策略
 在 XDG_DATA_HOME/<name>（xdg）生成；dev 使用工作区本地临时目录
-.dsh-store（每次 dev 重建，不污染全局数据目录）。
+.dsh-store（缺省保留已有数据，--empty-home 才整目录重建，不污染全局
+数据目录）。
 
 全部产物在仓库根 target/ 下。
 `
@@ -56,6 +59,7 @@ func Run(args []string) int {
 	skipInstall := false
 	force := false
 	install := false
+	emptyHome := false
 	platform := ""
 	workspace := ""
 	profileName := ""
@@ -63,6 +67,8 @@ func Run(args []string) int {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
+		case a == "--empty-home":
+			emptyHome = true
 		case a == "--skip-install":
 			skipInstall = true
 		case a == "--force":
@@ -114,7 +120,7 @@ func Run(args []string) int {
 		if len(rest) >= 2 {
 			ws = rest[1]
 		}
-		if err := Dev(ws, skipInstall); err != nil {
+		if err := Dev(ws, skipInstall, emptyHome); err != nil {
 			fmt.Fprintf(os.Stderr, "dev 失败：%v\n", err)
 			return 1
 		}
@@ -351,7 +357,9 @@ func platformName() string {
 // Dev 基于工作区直接起一个 dsh web 并打开浏览器页面（不组装桌面应用）。
 // DSH_HOME 为工作区本地临时目录 .dsh-store，profiles/web 符号链接指向
 // 工作区；目录还不是工作区时从模板兜底创建工程文件并安装依赖。
-func Dev(ws string, skipInstall bool) error {
+// emptyHome=true 时整目录重建 .dsh-store（清空用户运行时数据）；缺省
+// 保留已有数据，只补缺失的布局。
+func Dev(ws string, skipInstall, emptyHome bool) error {
 	_, ws, err := resolveWorkspace(ws)
 	if err != nil {
 		return err
@@ -376,9 +384,9 @@ func Dev(ws string, skipInstall bool) error {
 		return err
 	}
 
-	// 2) 构造 dev 运行时 DSH_HOME：工作区 .dsh-store（每次全新重建），
-	//    profiles/web → 工作区。
-	homeDir, err := ensureDevHome(ws, true)
+	// 2) 构造 dev 运行时 DSH_HOME：工作区 .dsh-store（缺省保留已有数据，
+	//    仅补缺失布局；--empty-home 才整目录重建），profiles/web → 工作区。
+	homeDir, err := ensureDevHome(ws, emptyHome)
 	if err != nil {
 		return err
 	}
