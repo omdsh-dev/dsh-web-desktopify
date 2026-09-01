@@ -44,9 +44,13 @@ func findWorkspaceRoot(ws string) (string, error) {
 }
 
 // fixDeployWorkspace 修正 pnpm deploy 生成的 pnpm-workspace.yaml：
-// allowBuilds 的 `set this to true or false` 占位符改为 true，并补
+// allowBuilds 的 `set this to true or false` 占位符改为 true，补
 // minimumReleaseAge: 0（deploy 继承的 minimumReleaseAge 可能阻止安装
-// 新版包）。
+// 新版包），并补 autoInstallPeers: true——deploy 生成的配置不继承工作区
+// 的 autoInstallPeers，而 dsh-app-boot 等核心包把运行时必需的依赖
+// （cordis-plugin-group、dsh-invariants 等）声明为 peerDependencies 且
+// 全依赖树无普通依赖兜底，staging 补 install 时缺 autoInstallPeers 会漏装
+// 这些 peer，SEA 启动即 ERR_MODULE_NOT_FOUND。
 func fixDeployWorkspace(wsFile string) error {
 	raw, err := os.ReadFile(wsFile)
 	if err != nil {
@@ -57,6 +61,16 @@ func fixDeployWorkspace(wsFile string) error {
 	s = strings.ReplaceAll(s, ": set this to true or false", ": true")
 	if !strings.Contains(s, "minimumReleaseAge") {
 		s = strings.TrimRight(s, "\n") + "\nminimumReleaseAge: 0\n"
+	}
+	if !strings.Contains(s, "autoInstallPeers") {
+		s = strings.TrimRight(s, "\n") + "\nautoInstallPeers: true\n"
+	}
+	// nodeLinker hoisted：deploy 生成的配置默认 isolated，peer 依赖被装进
+	// 依赖者自己的 .pnpm 目录，loader entry 包（dsh-bash-sandbox 等）运行时
+	// 从自身目录向上解析 peer 会落空（顶层只放直接依赖）。hoisted 把 peer
+	// 解析结果扁平提升到顶层 node_modules，闭包内任意包都能解析到。
+	if !strings.Contains(s, "nodeLinker") {
+		s = strings.TrimRight(s, "\n") + "\nnodeLinker: hoisted\n"
 	}
 	return os.WriteFile(wsFile, []byte(s), 0o644)
 }
