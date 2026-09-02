@@ -14,22 +14,23 @@ import (
 	"github.com/omdsh-dev/dsh-web-desktopify/pkg/shell"
 )
 
-// buildShell 构建壳二进制（Wails v3）到 target/<name>/.shell/。构建输入由
-// shell 包内嵌在 CLI 二进制中，运行时解出并动态生成 go.mod 后 go build——
-// 不依赖外部源码树，CLI 可 go install 后脱离仓库运行。
-func buildShell(ws string, cfg *config.Config) (string, error) {
-	outDir := filepath.Join(config.BuildDir(ws, cfg), ".shell")
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return "", err
+// buildShell 构建壳二进制（Wails v3）到 dst 目录（调用方提供的暂存
+// 目录，完成后由调用方发布进缓存）。构建输入由 shell 包内嵌在 CLI
+// 二进制中，运行时解出并动态生成 go.mod 后 go build——不依赖外部源码
+// 树，CLI 可 go install 后脱离仓库运行。
+func buildShell(ws string, cfg *config.Config, dst string) error {
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
 	}
 	binName := "dsh-shell"
 	if runtime.GOOS == "windows" {
 		binName += ".exe"
 	}
-	out := filepath.Join(outDir, binName)
+	out := filepath.Join(dst, binName)
+	fmt.Printf("==> 解出内嵌壳源码\n")
 	srcDir, err := materializeShellSrc(ws, cfg)
 	if err != nil {
-		return "", err
+		return err
 	}
 	// 用完整 import 路径构建：外层模块经 replace 把仓库路径解析到内层
 	// 子模块 pkg/shell/，cmd 包即 github.com/omdsh-dev/dsh-web-desktopify/pkg/shell/cmd。
@@ -43,10 +44,11 @@ func buildShell(ws string, cfg *config.Config) (string, error) {
 		"GOFLAGS", os.Getenv("GOFLAGS")+" -mod=mod",
 		"GOWORK", "off",
 	)
+	fmt.Printf("==> exec: %s（cwd %s）\n", cmd.String(), srcDir)
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("go build 壳: %w", err)
+		return fmt.Errorf("go build 壳: %w", err)
 	}
-	return out, nil
+	return nil
 }
 
 // setEnv 返回在 env 基础上覆盖指定 key/value 的新环境切片（去掉重复 key）。
@@ -74,15 +76,15 @@ func setEnv(env []string, kvs ...string) []string {
 }
 
 // materializeShellSrc 把内嵌的壳构建输入（shell.FS）解出为临时模块根
-// （target/<name>/.shell-src/）并动态写入 go.mod，返回该根目录。每次全量
-// 重写，保证与二进制内嵌内容一致。
+// （node_modules/.dsh-web-desktopify/build/shell-src/）并动态写入 go.mod，
+// 返回该根目录。每次全量重写，保证与二进制内嵌内容一致。
 //
 // 模块布局：外层 module dsh-shell，内层子模块 pkg/shell/ 声明
 // module github.com/omdsh-dev/dsh-web-desktopify，外层经 replace 指回——
 // 壳源码的 import 解析为本地子目录，且绑定 FQN（PkgPath.TypeName.Method）
 // 稳定为 github.com/omdsh-dev/dsh-web-desktopify/pkg/shell/...。
 func materializeShellSrc(ws string, cfg *config.Config) (string, error) {
-	srcDir := filepath.Join(config.BuildDir(ws, cfg), ".shell-src")
+	srcDir := filepath.Join(buildDir(ws), "shell-src")
 	if err := os.RemoveAll(srcDir); err != nil {
 		return "", err
 	}

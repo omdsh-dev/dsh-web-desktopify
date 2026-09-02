@@ -4,6 +4,7 @@ package server
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,8 +51,10 @@ func command(exeDir, profile, port, dshHome string) *exec.Cmd {
 		cmdline := fmt.Sprintf("source %s >/dev/null 2>&1; exec %s %s",
 			rc, shellQuote(server), strings.Join(args, " "))
 		cmd = exec.Command(shell, "-c", cmdline)
+		log.Printf("server: exec: %s", cmd.String())
 	} else {
 		cmd = exec.Command(server, args...)
+		log.Printf("server: exec: %s", cmd.String())
 	}
 	cmd.Env = os.Environ()
 	if dshHome != "" {

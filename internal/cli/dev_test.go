@@ -42,28 +42,24 @@ func TestToolFingerprint(t *testing.T) {
 	_ = toolFingerprint(partial)
 }
 
-// TestEnsureDevHomeFresh：fresh 重建后 profiles/web 是指向工作区的符号
-// 链接，残留的实体目录/旧数据被清空。
-func TestEnsureDevHomeFresh(t *testing.T) {
+// TestEnsureDevHome：profiles/web 整目录软链到工作区；已有数据保留
+// （不清理 .dsh-store）。
+func TestEnsureDevHome(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows 符号链接需要特权")
 	}
 	ws := t.TempDir()
-
-	// 预置残留：实体 profiles/web 拷贝 + 杂项数据，模拟旧布局/实体拷贝
-	// 导致的 dev 读旧配置。
-	leftover := filepath.Join(devHome(ws), "profiles", "web")
-	if err := os.MkdirAll(filepath.Join(leftover, "node_modules"), 0o755); err != nil {
-		t.Fatal(err)
+	// 工作区工程文件。
+	for _, f := range []string{"package.json", "cordis.patch.yml"} {
+		if err := os.WriteFile(filepath.Join(ws, f), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(leftover, "package.json"), []byte("old"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(devHome(ws), "settings.yaml"), []byte("old"), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(ws, "node_modules"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	home, err := ensureDevHome(ws, true)
+	home, err := ensureDevHome(ws)
 	if err != nil {
 		t.Fatalf("ensureDevHome: %v", err)
 	}
@@ -71,6 +67,7 @@ func TestEnsureDevHomeFresh(t *testing.T) {
 		t.Fatalf("home 应为 %s，得到 %s", devHome(ws), home)
 	}
 
+	// profiles/web 是指向工作区的符号链接。
 	link := filepath.Join(home, "profiles", "web")
 	info, err := os.Lstat(link)
 	if err != nil {
@@ -87,9 +84,16 @@ func TestEnsureDevHomeFresh(t *testing.T) {
 		t.Fatalf("链接应指向 %s，得到 %s（%v）", want, got, err)
 	}
 
-	// 残留应被清空（fresh 重建）。
-	if _, err := os.Stat(filepath.Join(home, "settings.yaml")); !os.IsNotExist(err) {
-		t.Fatalf("fresh 重建应清空残留 settings.yaml（%v）", err)
+	// 已有数据保留：写入 settings.yaml 后再次构造不清理。
+	if err := os.WriteFile(filepath.Join(home, "settings.yaml"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ensureDevHome(ws); err != nil {
+		t.Fatalf("二次构造: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, "settings.yaml"))
+	if err != nil || string(raw) != "keep" {
+		t.Fatalf("不应清空已有数据（%q, %v）", raw, err)
 	}
 }
 
@@ -129,14 +133,21 @@ func TestWorkspaceHashIgnoresDevStore(t *testing.T) {
 	}
 }
 
-// TestEnsureDevHomeKeep：非 fresh（plugin add）不重建：已有链接保持，
-// 缺失时创建。
+// TestEnsureDevHomeKeep：已有链接保持，缺失时创建（幂等，不重建）。
 func TestEnsureDevHomeKeep(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows 符号链接需要特权")
 	}
 	ws := t.TempDir()
-	home, err := ensureDevHome(ws, false)
+	for _, f := range []string{"package.json", "cordis.patch.yml"} {
+		if err := os.WriteFile(filepath.Join(ws, f), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(ws, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	home, err := ensureDevHome(ws)
 	if err != nil {
 		t.Fatalf("首次构造: %v", err)
 	}
@@ -151,11 +162,11 @@ func TestEnsureDevHomeKeep(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "settings.yaml"), []byte("keep"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ensureDevHome(ws, false); err != nil {
+	if _, err := ensureDevHome(ws); err != nil {
 		t.Fatalf("二次构造: %v", err)
 	}
 	raw, err := os.ReadFile(filepath.Join(home, "settings.yaml"))
 	if err != nil || string(raw) != "keep" {
-		t.Fatalf("非 fresh 不应清空已有数据（%q, %v）", raw, err)
+		t.Fatalf("不应清空已有数据（%q, %v）", raw, err)
 	}
 }

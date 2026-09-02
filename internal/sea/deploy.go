@@ -21,7 +21,6 @@ import (
 	"strings"
 
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/config"
-	"github.com/omdsh-dev/dsh-web-desktopify/internal/fsutil"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/pm"
 )
 
@@ -76,24 +75,22 @@ func fixDeployWorkspace(wsFile string) error {
 }
 
 // DeployClosure 在 workspace 根用 pnpm deploy 导出 cfg 的生产依赖闭包到
-// target/<name>（BuildDir，与 sea.Build 的闭包来源一致），并补 install。
-// pnpm deploy 不自动创建目标目录的父路径，须先手动 MkdirAll。
-func DeployClosure(ws string, cfg *config.Config) (string, error) {
+// dst（调用方提供的暂存目录，pnpm deploy 不自动创建目标目录的父路径，
+// 须先手动 MkdirAll），并补 install。完成后 node_modules 位于
+// dst/node_modules。
+func DeployClosure(ws string, cfg *config.Config, dst string) error {
 	absWS, err := filepath.Abs(ws)
 	if err != nil {
-		return "", err
+		return err
 	}
 	root, err := findWorkspaceRoot(absWS)
 	if err != nil {
-		return "", err
+		return err
 	}
-	staging := config.DeployDir(ws, cfg)
-	if err := fsutil.RemoveAll(staging); err != nil {
-		return "", fmt.Errorf("clean staging: %w", err)
-	}
-	// pnpm deploy 不创建目标目录的父路径——手动创建（含 target/ 与 <name>/）。
+	fmt.Printf("==> deploy 闭包（workspace 根 %s）\n", root)
+	staging := dst
 	if err := os.MkdirAll(staging, 0o755); err != nil {
-		return "", err
+		return err
 	}
 
 	// 1) pnpm deploy --prod --ignore-scripts <staging>（在 workspace 根跑）。
@@ -104,7 +101,7 @@ func DeployClosure(ws string, cfg *config.Config) (string, error) {
 	// monorepo 内嵌工作区（根在上层）用 --filter 选择该包。
 	bin, err := pm.Bin()
 	if err != nil {
-		return "", err
+		return err
 	}
 	var args []string
 	if root != absWS {
@@ -113,37 +110,42 @@ func DeployClosure(ws string, cfg *config.Config) (string, error) {
 	args = append(args, "deploy", "--prod", "--ignore-scripts", staging)
 	cmd, err := pm.Command(args...)
 	if err != nil {
-		return "", err
+		return err
 	}
 	cmd.Dir = root
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	fmt.Printf("==> exec: %s（cwd %s）\n", cmd.String(), root)
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("pnpm deploy（workspace %s）: %w", root, err)
+		return fmt.Errorf("pnpm deploy（workspace %s）: %w", root, err)
 	}
+	fmt.Printf("==> pnpm deploy 完成: %s\n", staging)
 
 	// 2) 修正 staging 的 pnpm-workspace.yaml（deploy 生成）。
 	wsFile := filepath.Join(staging, "pnpm-workspace.yaml")
 	if _, err := os.Stat(wsFile); err == nil {
 		if err := fixDeployWorkspace(wsFile); err != nil {
-			return "", fmt.Errorf("fix deploy workspace: %w", err)
+			return fmt.Errorf("fix deploy workspace: %w", err)
 		}
+		fmt.Printf("==> 修正 deploy workspace 配置（allowBuilds/minimumReleaseAge/autoInstallPeers/nodeLinker）\n")
 	}
 
 	// 3) 在 staging 补 pnpm install（--ignore-scripts：deploy 生成的
 	// workspace 配置含 allowBuilds 占位符会触发 ERR_PNPM_IGNORED_BUILDS；
 	// 闭包从 store 克隆已含构建产物，跳过脚本不影响运行时）。
+	fmt.Printf("==> 补 pnpm install（%s）\n", staging)
 	installCmd := exec.Command(bin, "install", "--no-frozen-lockfile", "--ignore-scripts")
 	installCmd.Dir = staging
 	installCmd.Stdout = os.Stdout
 	installCmd.Stderr = os.Stderr
+	fmt.Printf("==> exec: %s（cwd %s）\n", installCmd.String(), staging)
 	if err := installCmd.Run(); err != nil {
-		return "", fmt.Errorf("pnpm install（%s）: %w", staging, err)
+		return fmt.Errorf("pnpm install（%s）: %w", staging, err)
 	}
 
 	nmDst := filepath.Join(staging, "node_modules")
 	if _, err := os.Stat(nmDst); err != nil {
-		return "", fmt.Errorf("deploy 未产出 node_modules: %w", err)
+		return fmt.Errorf("deploy 未产出 node_modules: %w", err)
 	}
-	return nmDst, nil
+	return nil
 }

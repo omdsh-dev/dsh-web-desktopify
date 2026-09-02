@@ -3,6 +3,7 @@
 package server
 
 import (
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,6 +37,7 @@ func command(exeDir, profile, port, dshHome string) *exec.Cmd {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: createNewProcessGroup | createNoWindow,
 	}
+	log.Printf("server: exec: %s", cmd.String())
 	return cmd
 }
 

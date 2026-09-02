@@ -1,10 +1,10 @@
 // Package bundle 把 SEA 产物、壳二进制与构建出的 DSH_HOME 装配为平台
-// 桌面应用与开发布局。全部产物在 target/<name>/ 下：
+// 桌面应用与开发布局。全部产物在 node_modules/.dsh-web-desktopify/ 下
+// （CLI 分步缓存 cache/<step>/<digest>/ 的 assemble 步）：
 //
-//	macOS   target/<name>/<Name>.app/Contents/{MacOS,Resources,config,node_modules,package.json,dsh-home,Info.plist}
-//	Linux   target/<name>/linux/<Name>/{bin,config,node_modules,package.json,dsh-home,share/icons/hicolor}
-//	Windows target/<name>/windows/<Name>/{bin,config,node_modules,package.json,dsh-home,dsh.ico}
-//	dev     target/<name>/dev/{bin,config,node_modules,package.json,dsh-home}
+//	macOS   .../cache/assemble/<dg>/<Name>.app/Contents/{MacOS,Resources,config,node_modules,package.json,dsh-home,Info.plist}
+//	Linux   .../cache/assemble/<dg>/<Name>/{bin,config,node_modules,package.json,dsh-home,share/icons/hicolor}
+//	Windows .../cache/assemble/<dg>/<Name>/{bin,config,node_modules,package.json,dsh-home,dsh.ico}
 //
 // dsh-home 是打包进应用的 DSH_HOME 种子（profiles/web/ 等，由 profile 包
 // 构建），壳在运行时按 appconfig 的 dshHome 策略落位
@@ -26,8 +26,9 @@ import (
 
 // SeedAllow 构造 DSH_HOME 种子的文件白名单判定。白名单 = package.json +
 // node_modules + cordis.patch.yml（profile patch 层，恒必需）+ package.json
-// 的 files 字段；其余工作区内容（target/、.dsh-store、锁文件、git 元数据
-// 等）一律不进种子。返回的回调按 CopyDirDeref / DirHash 的 ignored 语义
+// 的 files 字段；其余工作区内容（node_modules/.dsh-web-desktopify/、
+// .dsh-store、锁文件、git 元数据等）一律不进种子。返回的回调按
+// CopyDirDeref / DirHash 的 ignored 语义
 // 工作：rel（/ 分隔）命中白名单时返回 true（保留），目录命中即保留整棵
 // 子树（files 里列目录的 npm 语义）。
 func SeedAllow(files []string) func(rel string, isDir bool) bool {
@@ -76,23 +77,9 @@ type appConfig struct {
 type Inputs struct {
 	Workspace string // 工作区（target/ 产物根与图标源）
 	Cfg       *config.Config
-	SeaExe    string // SEA 可执行（sea/bin/dsh）
+	SeaDir    string // SEA 产物目录（bin/dsh、config/、node_modules/、package.json）
 	ShellBin  string // 壳二进制（go build 壳源码的产物）
 	SeedHash  string // 工作区内容 hash（写入种子的 .seed-hash 指纹，壳启动时比对）
-}
-
-// AppRoot 返回平台应用的产物根目录（位于工作区 target/ 下）。
-func AppRoot(ws string, cfg *config.Config) string {
-	build := config.BuildDir(ws, cfg)
-	switch runtime.GOOS {
-	case "darwin":
-		return filepath.Join(build, cfg.Name+".app")
-	case "linux":
-		return filepath.Join(build, "linux", cfg.Name)
-	case "windows":
-		return filepath.Join(build, "windows", cfg.Name)
-	}
-	return filepath.Join(build, "app")
 }
 
 // BinNames 返回壳与后端文件名（平台相关扩展名）。
@@ -111,13 +98,19 @@ func assembleLayout(in Inputs, appRoot string) (string, error) {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return "", err
 	}
+	fmt.Printf("==> 装配布局 %s\n", appRoot)
 
 	// 壳与 SEA 后端。
 	shellName, serverName := BinNames()
 	if err := fsutil.CopyFile(in.ShellBin, filepath.Join(binDir, shellName)); err != nil {
 		return "", fmt.Errorf("copy shell: %w", err)
 	}
-	if err := fsutil.CopyFile(in.SeaExe, filepath.Join(binDir, serverName)); err != nil {
+	// SEA 产物里可执行名为 bin/dsh（SEA 打包约定），复制到 bin/ 时改名。
+	seaBin := filepath.Join(in.SeaDir, "bin", "dsh")
+	if runtime.GOOS == "windows" {
+		seaBin += ".exe"
+	}
+	if err := fsutil.CopyFile(seaBin, filepath.Join(binDir, serverName)); err != nil {
 		return "", fmt.Errorf("copy dsh-server: %w", err)
 	}
 	if runtime.GOOS != "windows" {
@@ -125,20 +118,22 @@ func assembleLayout(in Inputs, appRoot string) (string, error) {
 			return "", err
 		}
 	}
+	fmt.Printf("==>    bin/: %s, %s\n", shellName, serverName)
 
 	// 壳运行时配置。
 	if err := writeAppConfig(binDir, in.Cfg); err != nil {
 		return "", fmt.Errorf("write appconfig.json: %w", err)
 	}
+	fmt.Printf("==>    bin/appconfig.json（%s %s）\n", in.Cfg.Name, in.Cfg.Version)
 
-	// SEA 运行时资源：config/、node_modules/、package.json（从 staging 复制）。
-	staging := config.SeaDir(in.Workspace, in.Cfg)
+	// SEA 运行时资源：config/、node_modules/、package.json（从 SEA 产物复制）。
 	for _, name := range []string{"config", "node_modules", "package.json"} {
-		src := filepath.Join(staging, name)
+		src := filepath.Join(in.SeaDir, name)
 		if err := fsutil.CopyDir(src, filepath.Join(appRoot, name)); err != nil {
 			return "", fmt.Errorf("copy %s: %w", name, err)
 		}
 	}
+	fmt.Printf("==>    SEA 运行时资源: config/ node_modules/ package.json\n")
 
 	// DSH_HOME 种子：工作区 → appRoot/dsh-home/profiles/web（解引用）。
 	// 白名单 = package.json + package.json 的 files 字段；node_modules 不
@@ -158,6 +153,7 @@ func assembleLayout(in Inputs, appRoot string) (string, error) {
 		}
 		return !allow(rel, isDir)
 	}
+	fmt.Printf("==>    DSH_HOME 种子（白名单: package.json, files=%v）\n", in.Cfg.Files)
 	if err := fsutil.CopyDirDeref(in.Workspace, profileDir, nil, seedIgnored); err != nil {
 		return "", fmt.Errorf("copy dsh-home seed: %w", err)
 	}
@@ -190,17 +186,18 @@ func writeAppConfig(binDir string, cfg *config.Config) error {
 	return os.WriteFile(filepath.Join(binDir, "appconfig.json"), append(raw, '\n'), 0o644)
 }
 
-// Assemble 按当前平台组装应用，返回产物根目录。
-func Assemble(in Inputs) (string, error) {
+// Assemble 按当前平台组装应用，把产物写进 dst 目录（调用方提供的暂存
+// 目录，完成后由调用方发布进缓存）。
+func Assemble(in Inputs, dst string) error {
 	switch runtime.GOOS {
 	case "darwin":
-		return assembleMacOS(in)
+		return assembleMacOS(in, dst)
 	case "linux":
-		return assembleLinux(in)
+		return assembleLinux(in, dst)
 	case "windows":
-		return assembleWindows(in)
+		return assembleWindows(in, dst)
 	default:
-		return "", fmt.Errorf("unsupported platform: %s", runtime.GOOS)
+		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
 	}
 }
 

@@ -15,16 +15,40 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/omdsh-dev/dsh-web-desktopify/internal/config"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/pm"
 )
 
 //go:embed all:templates
 var templates embed.FS
 
-// Installed 报告闭包是否已安装（工作区 node_modules 中存在 dsh 主包）。
+// DshClosureDir 向上查找第一个 node_modules 里有 dsh 主包的目录（工作区
+// 自身或祖先）。monorepo 内嵌工作区（dsh 在 peerDependencies，hoisted 到
+// workspace 根 node_modules）时返回根；找不到返回空串。不依赖
+// pnpm-workspace.yaml 判定——工作区可能被 deploy 产物污染出多余的
+// workspace 配置，但 dsh 闭包位置是唯一事实。
+func DshClosureDir(ws string) string {
+	dir, err := filepath.Abs(ws)
+	if err != nil {
+		dir = ws
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "node_modules", "@deepseek-ai", "dsh", "package.json")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// Installed 报告闭包是否已安装：工作区或向上最近的 workspace 根
+// （monorepo 内嵌工作区，dsh 在 peerDependencies 时 hoisted 到根
+// node_modules）的 node_modules 中存在 dsh 主包。
 func Installed(ws string) bool {
-	_, err := os.Stat(filepath.Join(ws, "node_modules", "@deepseek-ai", "dsh", "package.json"))
-	return err == nil
+	return DshClosureDir(ws) != ""
 }
 
 // Ensure 确保工程文件齐全（缺失则从模板兜底生成），未安装时在工作区
@@ -34,13 +58,20 @@ func Ensure(ws string, skipInstall bool) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("mkdir %s: %w", dir, err)
 	}
-	// 工程文件兜底：缺失时从模板生成。
+	// 工程文件兜底：缺失时从模板生成。pnpm-workspace.yaml 只在独立工作区
+	// （ws 自身就是 workspace 根）兜底——monorepo 内嵌工作区（根在上层）
+	// 的 workspace 配置在根，工作区自身写一份会污染工程文件（pnpm 按
+	// 最近的 workspace 配置解析，工作区这份会遮蔽根配置）。
+	wsRoot := config.WorkspaceRoot(ws)
 	entries, err := templates.ReadDir("templates")
 	if err != nil {
 		return "", fmt.Errorf("read embedded templates: %w", err)
 	}
 	for _, e := range entries {
 		if e.IsDir() {
+			continue
+		}
+		if e.Name() == "pnpm-workspace.yaml" && wsRoot != dir {
 			continue
 		}
 		target := filepath.Join(dir, e.Name())
@@ -62,7 +93,7 @@ func Ensure(ws string, skipInstall bool) (string, error) {
 		}
 	}
 	if !Installed(ws) {
-		return "", fmt.Errorf("闭包未安装（%s/node_modules/@deepseek-ai/dsh 缺失）；先在工作区执行 pnpm install 或 bundle", dir)
+		return "", fmt.Errorf("闭包未安装（%s 及其祖先的 node_modules/@deepseek-ai/dsh 均缺失）；先在工作区执行 pnpm install 或 bundle", dir)
 	}
 	return dir, nil
 }
@@ -72,6 +103,7 @@ func Install(dir string, skip bool) error {
 	if skip {
 		return nil
 	}
+	fmt.Printf("==> pnpm install（%s）\n", dir)
 	cmd, err := pm.Command("install")
 	if err != nil {
 		return err
@@ -79,6 +111,7 @@ func Install(dir string, skip bool) error {
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	fmt.Printf("==> exec: %s（cwd %s）\n", cmd.String(), dir)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("pnpm install（%s）: %w", dir, err)
 	}

@@ -6,41 +6,40 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-
-	"github.com/omdsh-dev/dsh-web-desktopify/internal/config"
-	"github.com/omdsh-dev/dsh-web-desktopify/internal/fsutil"
 )
 
-// assembleWindows 组装 Windows 应用 target/<name>/windows/<Name>/：
+// assembleWindows 组装 Windows 应用到 dst（暂存目录，完成后由调用方
+// 发布进缓存），布局为 <dst>/<Name>/：
 //
-//	bin/{dsh-shell.exe,dsh-server.exe,appconfig.json}
-//	config/ node_modules/ package.json dsh-home/
-//	dsh.ico
+//	<Name>/bin/{dsh-shell.exe,dsh-server.exe,appconfig.json}
+//	<Name>/config/ <Name>/node_modules/ <Name>/package.json <Name>/dsh-home/
+//	<Name>/dsh.ico
 //
-// 完成后打包 target/<name>/windows/<Name>.zip（顶层目录 <Name>/）。
-func assembleWindows(in Inputs) (string, error) {
-	root := filepath.Join(config.BuildDir(in.Workspace, in.Cfg), "windows")
-	appRoot := filepath.Join(root, in.Cfg.Name)
-	if err := fsutil.RemoveAll(root); err != nil {
-		return "", err
+// 完成后在 <dst> 内打包 <Name>.zip（顶层目录 <Name>/）。
+func assembleWindows(in Inputs, dst string) error {
+	appRoot := filepath.Join(dst, in.Cfg.Name)
+	if err := os.MkdirAll(appRoot, 0o755); err != nil {
+		return err
 	}
+	fmt.Printf("==> 组装 Windows 应用 %s\n", appRoot)
 	if _, err := assembleLayout(in, appRoot); err != nil {
-		return "", err
+		return err
 	}
 
 	// 图标（可选）：dsh.ico（多尺寸 PNG 内嵌，Vista+）。
 	if in.Cfg.Desktop.Icon != "" {
 		if _, err := iconFor(in, appRoot, "windows"); err != nil {
-			return "", err
+			return err
 		}
 	}
 
 	// 归档 zip。
-	zipPath := filepath.Join(root, in.Cfg.Name+".zip")
+	zipPath := filepath.Join(dst, in.Cfg.Name+".zip")
+	fmt.Printf("==> 归档 %s\n", zipPath)
 	if err := zipDir(appRoot, zipPath, in.Cfg.Name); err != nil {
-		return "", fmt.Errorf("zip: %w", err)
+		return fmt.Errorf("zip: %w", err)
 	}
-	return appRoot, nil
+	return nil
 }
 
 // zipDir 把 dir 打包为 zip，归档内顶层目录名为 topName。

@@ -3,7 +3,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,8 +34,6 @@ const usage = `dsh-web-desktopify — 把 dsh 的 --profile web 与 cordis.patch
   --install            打包后安装到当前平台（macOS /Applications、
                        Linux XDG data + .desktop、Windows %LOCALAPPDATA%\Programs）
   --skip-install       跳过依赖安装（使用已有安装）
-  --empty-home         dev 时整目录重建 .dsh-store（清空用户运行时数据；
-                       缺省保留已有数据，只补缺失布局）
   --workspace=<path>   plugin add 的目标工作区（缺省当前目录）
   --profile=<name>     plugin add 兼容 dsh 写法；desktop 只有 web，仅接受 web
 
@@ -48,10 +45,10 @@ const usage = `dsh-web-desktopify — 把 dsh 的 --profile web 与 cordis.patch
 
 settings.yaml 等用户运行时数据不属于工作区：打包应用按 dshHome 策略
 在 XDG_DATA_HOME/<name>（xdg）生成；dev 使用工作区本地临时目录
-.dsh-store（缺省保留已有数据，--empty-home 才整目录重建，不污染全局
-数据目录）。
+.dsh-store（保留已有数据，只补缺失布局，不污染全局数据目录）。
 
-全部产物在仓库根 target/ 下。
+全部产物在 node_modules/.dsh-web-desktopify/ 下（cache/<step>/<digest>/，
+node_modules 已被 git 忽略）。
 `
 
 // Run 执行 CLI，返回进程退出码。
@@ -182,9 +179,11 @@ func checkPlatform(platform string) error {
 // Bundle 执行一次完整打包（依赖闭包 → SEA → 壳 → 平台组装），返回产物
 // 路径。
 //
-// 默认基于构建缓存：工作区内容（package.json / cordis.patch.yml /
-// pnpm-workspace.yaml / .npmrc / 图标 / pnpm-lock.yaml 等）与上次打包一致
-// 时直接复用已有产物；--force 忽略缓存全新打包。
+// 产物按输入指纹内容寻址缓存（node_modules/.dsh-web-desktopify/cache/
+// <step>/<digest>/）：检查只
+// 关心目录在不在，不比对状态记录；依赖传导由 digest 链天然保证——
+// deploy 重建后其 digest 变化，SEA / 平台组装的 digest 随之变化，必然
+// 重建。--force 全部重建（deploy 重新 pnpm deploy，不再复用旧依赖闭包）。
 func Bundle(ws, platform string, force, install, skipInstall bool) (string, error) {
 	if err := checkPlatform(platform); err != nil {
 		return "", err
@@ -209,76 +208,94 @@ func Bundle(ws, platform string, force, install, skipInstall bool) (string, erro
 	// CLI/壳源码指纹：代码变更后旧产物不再复用（见 toolFingerprint）。
 	tool := toolFingerprint(root)
 
-	// 构建缓存：工作区 hash + 闭包指纹 + 平台 + 工具指纹。wsHash 同时作为
-	// DSH_HOME 种子的 .seed-hash 指纹。
-	statePath := filepath.Join(config.BuildDir(ws, cfg), ".build-state.json")
-	wsHash := ""
-	if !force {
-		wsHash, err = workspaceHash(ws, hashSkip, hashIgnored)
-		if err != nil {
-			return "", fmt.Errorf("计算工作区 hash: %w", err)
-		}
-		if state, err := os.ReadFile(statePath); err == nil {
-			var st buildState
-			if json.Unmarshal(state, &st) == nil && tool != "" && st.Tool == tool && st.Hash == wsHash && st.Platform == platformName() {
-				appRoot := bundle.AppRoot(ws, cfg)
-				if dirExists(appRoot) {
-					fmt.Printf("==> 无变化（%s），复用 %s\n", st.Hash[:12], appRoot)
-					if install {
-						if err := bundle.Install(appRoot, cfg); err != nil {
-							return "", err
-						}
-					}
-					return appRoot, nil
-				}
+	if force {
+		fmt.Printf("==> --force：忽略构建缓存，全部重建\n")
+	}
+
+	// 工作区指纹：deploy 步输入（工程文件 + 闭包清单），同时写入 DSH_HOME
+	// 种子供壳启动比对。
+	wsHash, err := workspaceHash(ws, hashSkip, hashIgnored)
+	if err != nil {
+		return "", fmt.Errorf("计算工作区 hash: %w", err)
+	}
+	parts := strings.SplitN(wsHash, ":", 2)
+	fp := ""
+	if len(parts) == 2 {
+		fp = parts[1]
+	}
+	if fp == "" {
+		fmt.Printf("==> 工作区指纹: %s（闭包未安装，无指纹）\n", shortHash(wsHash))
+	} else {
+		fmt.Printf("==> 工作区指纹: %s（闭包指纹 %s）\n", shortHash(wsHash), shortHash(fp))
+	}
+
+	// ---- 分步 DAG（内容寻址缓存）----
+	// 1) deploy 闭包。输入 = 工作区指纹。缓存 = cache/deploy/<digest>/，
+	//    命中即目录存在；重建时重新 pnpm deploy（新版本依赖进闭包）。
+	deployStep := &buildStep{
+		id:    "deploy",
+		label: "deploy 闭包",
+		input: func() (string, error) { return wsHash, nil },
+		run: func(dst string) error {
+			if skipInstall {
+				return fmt.Errorf("deploy 缓存缺失（--skip-install 下不自动 deploy；先跑一次不带 --skip-install 的 bundle 或 pnpm deploy --filter=%s --prod）", cfg.Name)
 			}
+			return sea.DeployClosure(ws, cfg, dst)
+		},
+	}
+
+	// 2) SEA 后端。输入 = 工具链指纹 + deploy digest。deploy 重建后 digest
+	//    变化，自动重跑；依赖未变时复用 cache/sea/<digest>/。
+	seaStep := &buildStep{
+		id:    "sea",
+		label: "SEA 后端",
+		deps:  []*buildStep{deployStep},
+		input: func() (string, error) { return tool, nil },
+		run: func(dst string) error {
+			return sea.Build(ws, cfg, deployStep.cachePath(ws), dst)
+		},
+	}
+
+	// 3) 壳二进制。输入 = 工具链指纹；依赖仅用于 digest 传导。
+	shellStep := &buildStep{
+		id:    "shell",
+		label: "壳二进制",
+		deps:  []*buildStep{seaStep},
+		input: func() (string, error) { return tool, nil },
+		run: func(dst string) error {
+			return buildShell(ws, cfg, dst)
+		},
+	}
+
+	// 4) 平台组装。输入 = 平台 + 种子指纹 + SEA digest + 壳 digest。
+	assembleStep := &buildStep{
+		id:    "assemble",
+		label: "平台组装",
+		deps:  []*buildStep{seaStep, shellStep},
+		input: func() (string, error) { return platformName() + ":" + wsHash, nil },
+		run: func(dst string) error {
+			return bundle.Assemble(bundle.Inputs{
+				Workspace: ws,
+				Cfg:       cfg,
+				SeaDir:    seaStep.cachePath(ws),
+				ShellBin:  filepath.Join(shellStep.cachePath(ws), binName()),
+				SeedHash:  wsHash,
+			}, dst)
+		},
+	}
+
+	// 按依赖序执行（deploy → sea → shell → assemble）。
+	steps := []*buildStep{deployStep, seaStep, shellStep, assembleStep}
+	for _, s := range steps {
+		if _, _, err := runStep(ws, s, force); err != nil {
+			return "", err
 		}
 	}
 
-	fmt.Printf("==> 打包 %s（%s %s）\n", cfg.Name, config.ProfileName, cfg.Version)
-
-	// 种子指纹：--force 也计算（写入产物种子，供壳启动比对）。
-	if wsHash == "" {
-		if wsHash, err = workspaceHash(ws, hashSkip, hashIgnored); err != nil {
-			return "", fmt.Errorf("计算工作区 hash: %w", err)
-		}
-	}
-
-	// 1) SEA 后端。
-	seaExe, err := sea.Build(ws, cfg, skipInstall)
-	if err != nil {
-		return "", err
-	}
-	fmt.Printf("==> SEA 后端: %s\n", seaExe)
-
-	// 2) 壳二进制（构建输入由 pkg/shell 内嵌，脱离源码树）。
-	shellBin, err := buildShell(ws, cfg)
-	if err != nil {
-		return "", err
-	}
-
-	// 3) 平台组装。
-	appRoot, err := bundle.Assemble(bundle.Inputs{
-		Workspace: ws,
-		Cfg:       cfg,
-		SeaExe:    seaExe,
-		ShellBin:  shellBin,
-		SeedHash:  wsHash,
-	})
-	if err != nil {
-		return "", err
-	}
+	appRoot := assembleStep.cachePath(ws)
 	fmt.Printf("==> 产物: %s\n", appRoot)
 
-	// 记录构建状态。
-	st := buildState{Hash: wsHash, Platform: platformName(), Tool: tool}
-	if raw, err := json.Marshal(st); err == nil {
-		if err := os.MkdirAll(config.BuildDir(ws, cfg), 0o755); err == nil {
-			_ = os.WriteFile(statePath, raw, 0o644)
-		}
-	}
-
-	// 4) 安装（可选）。
+	// 安装（可选）。
 	if install {
 		if err := bundle.Install(appRoot, cfg); err != nil {
 			return "", err
@@ -287,11 +304,12 @@ func Bundle(ws, platform string, force, install, skipInstall bool) (string, erro
 	return appRoot, nil
 }
 
-// buildState 是构建缓存记录。
-type buildState struct {
-	Hash     string `json:"hash"`
-	Platform string `json:"platform"`
-	Tool     string `json:"tool"` // CLI/壳源码指纹（代码变更使旧产物失效）
+// binName 返回壳二进制文件名（平台相关扩展名）。
+func binName() string {
+	if runtime.GOOS == "windows" {
+		return "dsh-shell.exe"
+	}
+	return "dsh-shell"
 }
 
 // toolFingerprint 返回构建工具指纹，用于构建缓存失效：CLI/壳代码变更
@@ -354,12 +372,20 @@ func platformName() string {
 	return runtime.GOOS + "/" + runtime.GOARCH
 }
 
+// shortHash 截断 hash 为 12 位，便于日志对比（不足 12 位原样返回）。
+func shortHash(h string) string {
+	if len(h) <= 12 {
+		return h
+	}
+	return h[:12]
+}
+
 // Dev 基于工作区直接起一个 dsh web 并打开浏览器页面（不组装桌面应用）。
-// DSH_HOME 为工作区本地临时目录 .dsh-store，profiles/web 符号链接指向
-// 工作区；目录还不是工作区时从模板兜底创建工程文件并安装依赖。
-// emptyHome=true 时整目录重建 .dsh-store（清空用户运行时数据）；缺省
-// 保留已有数据，只补缺失的布局。
-func Dev(ws string, skipInstall, emptyHome bool) error {
+// DSH_HOME 为工作区本地临时目录 .dsh-store，profiles/web 整目录软链到
+// 工作区；目录还不是工作区时从模板兜底创建工程文件并安装依赖。退出时
+// 删除 dsh 写入工作区的 pnpm-workspace.yaml（仅当启动时本来没有）。
+// **不清理 .dsh-store**：dev 会话数据跨启动保留。
+func Dev(ws string, skipInstall, _ bool) error {
 	_, ws, err := resolveWorkspace(ws)
 	if err != nil {
 		return err
@@ -384,20 +410,22 @@ func Dev(ws string, skipInstall, emptyHome bool) error {
 		return err
 	}
 
-	// 2) 构造 dev 运行时 DSH_HOME：工作区 .dsh-store（缺省保留已有数据，
-	//    仅补缺失布局；--empty-home 才整目录重建），profiles/web → 工作区。
-	homeDir, err := ensureDevHome(ws, emptyHome)
+	// 2) 构造 dev 运行时 DSH_HOME：工作区 .dsh-store（保留已有数据），
+	//    profiles/web 整目录软链到工作区。
+	homeDir, err := ensureDevHome(ws)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("==> dev home: %s\n", homeDir)
 
 	// 3) 启动 dsh web（工作区闭包里的 dsh），解析就绪 URL。
-	dshBin := filepath.Join(ws, "node_modules", ".bin", "dsh")
+	dshBin := dshBin(ws)
 	if _, err := os.Stat(dshBin); err != nil {
 		return fmt.Errorf("工作区未安装 dsh（%s）；先 pnpm install 或去掉 --skip-install", dshBin)
 	}
+	hadWorkspace := fileExists(filepath.Join(ws, "pnpm-workspace.yaml"))
 	url, err := runWeb(dshBin, homeDir)
+	cleanupDevWorkspace(ws, hadWorkspace)
 	if err != nil {
 		return err
 	}

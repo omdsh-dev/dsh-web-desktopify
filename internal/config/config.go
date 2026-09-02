@@ -116,30 +116,33 @@ func Load(ws string) (*Config, error) {
 	return cfg, nil
 }
 
-// TargetDir 返回产物根 target/ 目录（位于工作区）。
-func TargetDir(ws string) string {
-	return filepath.Join(ws, "target")
+// BundleRoot 返回 bundle 临时产物根（node_modules/.dsh-web-desktopify/，
+// 位于工作区）。node_modules 已被 .gitignore 忽略，且 SeedAllow /
+// ClosureFingerprint / 工作区 hash 都按 node_modules 前缀排除，产物不会
+// 进 DSH_HOME 种子、不影响构建指纹。
+func BundleRoot(ws string) string {
+	return filepath.Join(ws, "node_modules", ".dsh-web-desktopify")
 }
 
-// BuildDir 返回该 desktop 的构建目录（target/<name>/，位于工作区）。
-func BuildDir(ws string, cfg *Config) string {
-	return filepath.Join(TargetDir(ws), cfg.Name)
-}
-
-// SeaDir 返回 SEA 打包暂存目录（target/<name>/sea）。
-func SeaDir(ws string, cfg *Config) string {
-	return filepath.Join(BuildDir(ws, cfg), "sea")
-}
-
-// DeployDir 返回 pnpm deploy 闭包目录（target/<name>/deploy）。
-// 与 sea/、.app、dsh-home 隔离，避免重复打包互相清除。
-func DeployDir(ws string, cfg *Config) string {
-	return filepath.Join(BuildDir(ws, cfg), "deploy")
-}
-
-// DSHHomeDir 返回构建出的 DSH_HOME 种子目录（target/<name>/dsh-home）。
-func DSHHomeDir(ws string, cfg *Config) string {
-	return filepath.Join(BuildDir(ws, cfg), "dsh-home")
+// WorkspaceRoot 向上查找最近的 pnpm-workspace.yaml，返回其目录。找不到
+// 时返回 ws 本身（独立工作区：ws 即根）。monorepo 内嵌工作区（如
+// apps/dsh-custom 在仓库根有 pnpm-workspace.yaml）时，依赖闭包与 dsh
+// 主包都安装在根 node_modules（hoisted），dev/plugin/bundle 需从根解析。
+func WorkspaceRoot(ws string) string {
+	dir, err := filepath.Abs(ws)
+	if err != nil {
+		return ws
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "pnpm-workspace.yaml")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ws
+		}
+		dir = parent
+	}
 }
 
 func sanitizeID(s string) string {

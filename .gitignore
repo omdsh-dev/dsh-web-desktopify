@@ -7,6 +7,8 @@ target/
 # dsh 运行时在 profile 目录生成的 root config（dev 符号链接写入）
 cordis.yml
 
+.pnpm-store/
+
 # dev 运行时目录（工作区本地临时 DSH_HOME，每次 dev 重建）
 .dsh-store/
 

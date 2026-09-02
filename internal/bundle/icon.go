@@ -110,6 +110,7 @@ func makeIcns(iconset, out string) error {
 	cmd := exec.Command("iconutil", "-c", "icns", iconset, "-o", out)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	fmt.Printf("==> exec: %s\n", cmd.String())
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("iconutil: %w", err)
 	}
@@ -183,6 +184,7 @@ func iconFor(in Inputs, destDir string, platform string) (string, error) {
 	if in.Cfg.Desktop.Icon == "" {
 		return "", nil
 	}
+	fmt.Printf("==>    生成图标（源 %s）\n", in.Cfg.Desktop.Icon)
 	icon1024, err := loadIcon1024(in)
 	if err != nil {
 		return "", err

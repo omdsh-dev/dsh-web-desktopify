@@ -10,18 +10,19 @@ import (
 )
 
 // TestShellBuildE2E 验证 buildShell 能解出内嵌源码、动态生成 go.mod 并
-// go build 出壳二进制。
+// go build 出壳二进制（产物写入调用方提供的暂存目录）。
 func TestShellBuildE2E(t *testing.T) {
 	ws := t.TempDir()
 	cfg := &config.Config{Name: "e2e-shell"}
-	out, err := buildShell(ws, cfg)
-	if err != nil {
+	dst := t.TempDir()
+	if err := buildShell(ws, cfg, dst); err != nil {
 		t.Fatalf("buildShell: %v", err)
 	}
+	out := filepath.Join(dst, binName())
 	if _, err := os.Stat(out); err != nil {
 		t.Fatalf("壳二进制不存在: %v", err)
 	}
-	srcDir := filepath.Join(config.BuildDir(ws, cfg), ".shell-src")
+	srcDir := filepath.Join(buildDir(ws), "shell-src")
 	gomod, err := os.ReadFile(filepath.Join(srcDir, "go.mod"))
 	if err != nil {
 		t.Fatalf("读 go.mod: %v", err)

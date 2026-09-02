@@ -20,6 +20,7 @@ func Install(appRoot string, cfg *config.Config) error {
 	switch runtime.GOOS {
 	case "darwin":
 		dst := filepath.Join("/Applications", cfg.Name+".app")
+		fmt.Printf("==> 安装到 %s\n", dst)
 		if err := fsutil.RemoveAll(dst); err != nil {
 			return err
 		}
@@ -31,6 +32,7 @@ func Install(appRoot string, cfg *config.Config) error {
 
 	case "linux":
 		dst := filepath.Join(xdg.DataHome, cfg.Name)
+		fmt.Printf("==> 安装到 %s\n", dst)
 		if err := fsutil.RemoveAll(dst); err != nil {
 			return err
 		}
@@ -65,6 +67,7 @@ Exec=%s
 			return fmt.Errorf("LOCALAPPDATA 未设置")
 		}
 		dst := filepath.Join(local, "Programs", cfg.Name)
+		fmt.Printf("==> 安装到 %s\n", dst)
 		if err := fsutil.RemoveAll(dst); err != nil {
 			return err
 		}

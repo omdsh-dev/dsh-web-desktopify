@@ -33,14 +33,15 @@ func PluginAdd(ws string, pkgs []string, skipInstall bool) error {
 	}
 
 	// 2) 构造 dev 运行时 DSH_HOME（与 dev 一致）：工作区 .dsh-store，
-	//    profiles/web → 工作区（只补缺失，不重建——dev 可能正在运行）。
-	homeDir, err := ensureDevHome(ws, false)
+	//    profiles/web 整目录软链到工作区（只补缺失，不重建——dev 可能
+	//    正在运行）。
+	homeDir, err := ensureDevHome(ws)
 	if err != nil {
 		return err
 	}
 
 	// 3) 调用工作区闭包里的 dsh（与 dev 相同）。
-	dshBin := filepath.Join(ws, "node_modules", ".bin", "dsh")
+	dshBin := dshBin(ws)
 	if _, err := os.Stat(dshBin); err != nil {
 		return fmt.Errorf("工作区未安装 dsh（%s）；先 pnpm install 或去掉 --skip-install", dshBin)
 	}
@@ -56,7 +57,11 @@ func PluginAdd(ws string, pkgs []string, skipInstall bool) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	fmt.Printf("==> exec: %s（DSH_HOME=%s）\n", cmd.String(), homeDir)
+	hadWorkspace := fileExists(filepath.Join(ws, "pnpm-workspace.yaml"))
+	err = cmd.Run()
+	cleanupDevWorkspace(ws, hadWorkspace)
+	if err != nil {
 		return fmt.Errorf("dsh plugin add: %w", err)
 	}
 
@@ -65,37 +70,6 @@ func PluginAdd(ws string, pkgs []string, skipInstall bool) error {
 		fmt.Printf("==> bundles: [%s]\n", strings.Join(cfg.Bundles, ", "))
 	}
 	return nil
-}
-
-// ensureProfileLink 确保 profiles/web 符号链接指向工作区：不存在则创建，
-// 已存在但指向别处时拒绝。
-func ensureProfileLink(link, ws string) error {
-	info, err := os.Lstat(link)
-	switch {
-	case err == nil:
-		if info.Mode()&os.ModeSymlink == 0 {
-			return fmt.Errorf("%s 已存在但不是符号链接；请手动处理后再试", link)
-		}
-		got, err := filepath.EvalSymlinks(link)
-		if err != nil {
-			return fmt.Errorf("解析 %s: %w", link, err)
-		}
-		want, err := filepath.EvalSymlinks(ws)
-		if err != nil {
-			return fmt.Errorf("解析 %s: %w", ws, err)
-		}
-		if got != want {
-			return fmt.Errorf("%s 指向 %s，不是工作区 %s；请手动处理后再试", link, got, ws)
-		}
-		return nil
-	case os.IsNotExist(err):
-		if err := os.Symlink(ws, link); err != nil {
-			return fmt.Errorf("构造 profiles/web 链接: %w", err)
-		}
-		return nil
-	default:
-		return err
-	}
 }
 
 // withEnv 返回 env 的副本，其中 key 的值替换为 value（先移除旧条目再追加）。

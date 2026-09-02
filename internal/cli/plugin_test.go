@@ -3,7 +3,6 @@ package cli
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -41,60 +40,24 @@ func TestPrependPath(t *testing.T) {
 	}
 }
 
-func TestEnsureProfileLink(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows 符号链接需要特权")
-	}
-	home := t.TempDir()
-	ws := filepath.Join(home, "ws")
-	if err := os.MkdirAll(ws, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(home, "profiles", "web")
-	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
-		t.Fatal(err)
+// TestCleanupDevWorkspace：dsh 运行期间写入工作区的 pnpm-workspace.yaml
+// 在退出时被删除（仅当启动时本来没有）；启动时已有则保留。
+func TestCleanupDevWorkspace(t *testing.T) {
+	ws := t.TempDir()
+
+	// 启动时没有 → 退出时删除。
+	cleanupDevWorkspace(ws, false)
+	if _, err := os.Stat(filepath.Join(ws, "pnpm-workspace.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("应删除 dsh 写入的 pnpm-workspace.yaml（%v）", err)
 	}
 
-	// 不存在时创建。
-	if err := ensureProfileLink(link, ws); err != nil {
-		t.Fatalf("创建链接: %v", err)
-	}
-	want, err := filepath.EvalSymlinks(ws)
-	if err != nil {
+	// 启动时已有 → 退出时保留。
+	if err := os.WriteFile(filepath.Join(ws, "pnpm-workspace.yaml"), []byte("keep"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := filepath.EvalSymlinks(link); err != nil || got != want {
-		t.Fatalf("链接应指向 %s，得到 %s（%v）", want, got, err)
-	}
-
-	// 已指向同一工作区：幂等通过。
-	if err := ensureProfileLink(link, ws); err != nil {
-		t.Fatalf("同目标应通过: %v", err)
-	}
-
-	// 指向别处：拒绝。
-	other := filepath.Join(home, "other")
-	if err := os.MkdirAll(other, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(link); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(other, link); err != nil {
-		t.Skipf("创建符号链接失败: %v", err)
-	}
-	if err := ensureProfileLink(link, ws); err == nil {
-		t.Fatal("指向别处的链接应报错")
-	}
-
-	// 普通目录（非符号链接）：拒绝。
-	if err := os.Remove(link); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(link, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := ensureProfileLink(link, ws); err == nil {
-		t.Fatal("普通目录应报错")
+	cleanupDevWorkspace(ws, true)
+	raw, err := os.ReadFile(filepath.Join(ws, "pnpm-workspace.yaml"))
+	if err != nil || string(raw) != "keep" {
+		t.Fatalf("启动时已有的 pnpm-workspace.yaml 应保留（%q, %v）", raw, err)
 	}
 }

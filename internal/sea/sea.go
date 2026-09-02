@@ -72,53 +72,39 @@ func writeBridge(nmDir string) error {
 	return os.WriteFile(filepath.Join(dir, "index.cjs"), []byte(bridgeIndex), 0o644)
 }
 
-// SeaExe 返回 SEA 可执行文件路径。
-func SeaExe(ws string, cfg *config.Config) string {
-	exe := filepath.Join(config.SeaDir(ws, cfg), "bin", "dsh")
-	if runtime.GOOS == "windows" {
-		exe += ".exe"
-	}
-	return exe
-}
-
-// Build 执行一次完整的 SEA 打包，返回 SEA 可执行文件路径。
-// 全部产物（暂存、工具链、可执行）都位于工作区 target/ 下。
-func Build(ws string, cfg *config.Config, skipInstall bool) (string, error) {
+// Build 执行一次完整的 SEA 打包，把产物写进 dst 目录（调用方提供的
+// 暂存目录，完成后由调用方发布进缓存）。deployDir 是 deploy 闭包所在
+// 目录（CLI 分步 DAG 的 deploy 步负责生成/复用），此处直接复用。
+func Build(ws string, cfg *config.Config, deployDir, dst string) error {
 	if _, err := tools.Ensure(ws); err != nil {
-		return "", err
+		return err
 	}
 
-	staging := config.SeaDir(ws, cfg)
-	if err := fsutil.RemoveAll(staging); err != nil {
-		return "", fmt.Errorf("clean staging: %w", err)
-	}
+	staging := dst
 	if err := os.MkdirAll(staging, 0o755); err != nil {
-		return "", fmt.Errorf("mkdir staging: %w", err)
+		return fmt.Errorf("mkdir staging: %w", err)
 	}
+	fmt.Printf("==> SEA 暂存: %s\n", staging)
 
-	// 1) 闭包：target/<name>/deploy/node_modules（pnpm deploy --prod 生成的
-	// 自包含生产闭包）。缺失时自动执行 deploy（含修正 workspace 配置与补
-	// install）。保留链接（deploy 闭包的相对链接指向自身 .pnpm，自包含
+	// 1) 闭包：deployDir/node_modules（pnpm deploy --prod 生成的自包含
+	// 生产闭包）。保留链接（deploy 闭包的相对链接指向自身 .pnpm，自包含
 	// 无逃逸）。
-	deployRoot := config.DeployDir(ws, cfg)
+	deployRoot := deployDir
 	deployNM := filepath.Join(deployRoot, "node_modules")
 	if _, err := os.Stat(deployNM); err != nil {
-		if !skipInstall {
-			if _, err := DeployClosure(ws, cfg); err != nil {
-				return "", err
-			}
-		} else {
-			return "", fmt.Errorf("deploy 闭包缺失 %s（--skip-install 下不自动 deploy；先跑 pnpm deploy --filter=%s --prod %s）: %w", deployNM, cfg.Name, deployRoot, err)
-		}
+		return fmt.Errorf("deploy 闭包缺失 %s（先跑 pnpm deploy --filter=%s --prod %s）: %w", deployNM, cfg.Name, deployRoot, err)
 	}
+	fmt.Printf("==> 复用 deploy 闭包: %s\n", deployNM)
 	nmDst := filepath.Join(staging, "node_modules")
+	fmt.Printf("==> 复制闭包 node_modules → %s\n", nmDst)
 	if err := fsutil.CopyDir(deployNM, nmDst); err != nil {
-		return "", fmt.Errorf("copy closure: %w", err)
+		return fmt.Errorf("copy closure: %w", err)
 	}
 
 	// 2) dsh-bridge：向闭包写入 CJS 桥（运行时从 exe 旁闭包解析加载）。
+	fmt.Printf("==> 写入 dsh-bridge 桥（%s）\n", filepath.Join(nmDst, bridgeName))
 	if err := writeBridge(nmDst); err != nil {
-		return "", fmt.Errorf("write dsh-bridge: %w", err)
+		return fmt.Errorf("write dsh-bridge: %w", err)
 	}
 
 	// 3) 资源：dsh 主包的 config/ 与 package.json（从闭包内 dsh 实体取，
@@ -126,19 +112,20 @@ func Build(ws string, cfg *config.Config, skipInstall bool) (string, error) {
 	dshLink := filepath.Join(nmDst, "@deepseek-ai", "dsh")
 	dshPkg, err := filepath.EvalSymlinks(dshLink)
 	if err != nil {
-		return "", fmt.Errorf("解析闭包内 dsh 实体: %w", err)
+		return fmt.Errorf("解析闭包内 dsh 实体: %w", err)
 	}
+	fmt.Printf("==> 复制 dsh 运行时资源（%s）\n", dshPkg)
 	if err := fsutil.CopyDir(filepath.Join(dshPkg, "config"), filepath.Join(staging, "config")); err != nil {
-		return "", fmt.Errorf("copy config: %w", err)
+		return fmt.Errorf("copy config: %w", err)
 	}
 	if err := fsutil.CopyFile(filepath.Join(dshPkg, "package.json"), filepath.Join(staging, "package.json")); err != nil {
-		return "", fmt.Errorf("copy package.json: %w", err)
+		return fmt.Errorf("copy package.json: %w", err)
 	}
 
 	// 4) 生成打包入口与配置（templates/ 内嵌）。
 	entries, err := templates.ReadDir("templates")
 	if err != nil {
-		return "", fmt.Errorf("read embedded templates: %w", err)
+		return fmt.Errorf("read embedded templates: %w", err)
 	}
 	for _, e := range entries {
 		if e.IsDir() {
@@ -146,28 +133,31 @@ func Build(ws string, cfg *config.Config, skipInstall bool) (string, error) {
 		}
 		data, err := templates.ReadFile("templates/" + e.Name())
 		if err != nil {
-			return "", err
+			return err
 		}
 		if err := os.WriteFile(filepath.Join(staging, e.Name()), data, 0o644); err != nil {
-			return "", fmt.Errorf("write %s: %w", e.Name(), err)
+			return fmt.Errorf("write %s: %w", e.Name(), err)
 		}
 	}
 
 	// 5) 构建。
 	if err := tools.Run(ws, staging, "tsdown", "-c", "tsdown.config.mjs"); err != nil {
-		return "", err
+		return err
 	}
 
 	// 校验产物不含未内联的裸导入（SEA blob 内只能解析 node 内置模块）。
 	if err := checkBareImports(filepath.Join(staging, "dist", "sea-entry.mjs")); err != nil {
-		return "", err
+		return err
 	}
 
-	exe := SeaExe(ws, cfg)
-	if _, err := os.Stat(exe); err != nil {
-		return "", fmt.Errorf("SEA 产物缺失: %w", err)
+	exe := filepath.Join(staging, "bin", "dsh")
+	if runtime.GOOS == "windows" {
+		exe += ".exe"
 	}
-	return exe, nil
+	if _, err := os.Stat(exe); err != nil {
+		return fmt.Errorf("SEA 产物缺失: %w", err)
+	}
+	return nil
 }
 
 // bareImportRE 匹配产物里的 ESM 裸导入 specifier（from/import/import()）。

@@ -1,6 +1,6 @@
-// Package tools 管理构建工具链（工作区 target/tools/）。构建工具（tsdown
-// 打包 SEA）按需安装到工作区 target/tools，与工作区依赖解耦。工程文件
-// 模板以 go:embed 内嵌在 templates/ 下。
+// Package tools 管理构建工具链（工作区 node_modules/.dsh-web-desktopify/
+// tools/）。构建工具（tsdown 打包 SEA）按需安装到 bundle 产物根，与工作
+// 区依赖解耦。工程文件模板以 go:embed 内嵌在 templates/ 下。
 package tools
 
 import (
@@ -10,18 +10,19 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/omdsh-dev/dsh-web-desktopify/internal/config"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/pm"
 )
 
 //go:embed all:templates
 var templates embed.FS
 
-// DirName 是工具链目录名（target/ 下）。
+// DirName 是工具链目录名（bundle 产物根下）。
 const DirName = "tools"
 
-// Dir 返回工具链目录（位于工作区 target/tools）。
+// Dir 返回工具链目录（位于工作区 node_modules/.dsh-web-desktopify/tools）。
 func Dir(ws string) string {
-	return filepath.Join(ws, "target", DirName)
+	return filepath.Join(config.BundleRoot(ws), DirName)
 }
 
 // Ensure 确保工具链已安装，返回工具链目录。已安装（tsdown 可执行存在）
@@ -30,8 +31,10 @@ func Ensure(ws string) (string, error) {
 	dir := Dir(ws)
 	bin := filepath.Join(dir, "node_modules", ".bin", "tsdown")
 	if _, err := os.Stat(bin); err == nil {
+		fmt.Printf("==> 工具链已安装（复用 %s）\n", dir)
 		return dir, nil
 	}
+	fmt.Printf("==> 安装工具链到 %s\n", dir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("mkdir tools %s: %w", dir, err)
 	}
@@ -58,9 +61,11 @@ func Ensure(ws string) (string, error) {
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	fmt.Printf("==> exec: %s（cwd %s）\n", cmd.String(), dir)
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("pnpm install（%s）: %w", dir, err)
 	}
+	fmt.Printf("==> 工具链就绪: %s\n", bin)
 	return dir, nil
 }
 
@@ -74,6 +79,7 @@ func Run(ws, dir, bin string, args ...string) error {
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	fmt.Printf("==> exec: %s（cwd %s）\n", cmd.String(), dir)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%s: %w", bin, err)
 	}
