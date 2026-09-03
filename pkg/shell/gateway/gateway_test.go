@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -228,5 +230,64 @@ func TestParseTarget(t *testing.T) {
 		if u.Host != c.host {
 			t.Fatalf("parseTarget(%q) host = %q, want %q", c.in, u.Host, c.host)
 		}
+	}
+}
+
+// makeAuthCookie 构造一个 authority 为指定 host 的 dsh 认证 cookie 值
+// （v1.<base64url JSON>.<sig>，sig 任意）。
+func makeAuthCookie(host string) string {
+	payload, _ := json.Marshal(map[string]string{"authority": host})
+	return "v1." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
+}
+
+func TestFilterCookies(t *testing.T) {
+	cur := makeAuthCookie("127.0.0.1:54896")
+	old := makeAuthCookie("127.0.0.1:50155")
+	older := makeAuthCookie("127.0.0.1:49526")
+
+	cases := []struct {
+		name   string
+		header string
+		host   string
+		want   string
+	}{
+		{
+			name:   "只保留当前端口的 dsh-auth",
+			header: "dsh-auth-a=" + cur + "; dsh-auth-b=" + old + "; dsh-auth-c=" + older,
+			host:   "127.0.0.1:54896",
+			want:   "dsh-auth-a=" + cur,
+		},
+		{
+			name:   "非 dsh-auth cookie 原样保留",
+			header: "dsh-auth-a=" + cur + "; theme=dark; session=x",
+			host:   "127.0.0.1:54896",
+			want:   "dsh-auth-a=" + cur + "; theme=dark; session=x",
+		},
+		{
+			name:   "无 dsh-auth 时原样返回",
+			header: "theme=dark; session=x",
+			host:   "127.0.0.1:54896",
+			want:   "theme=dark; session=x",
+		},
+		{
+			name:   "payload 解析失败保守保留",
+			header: "dsh-auth-a=not-a-token; theme=dark",
+			host:   "127.0.0.1:54896",
+			want:   "dsh-auth-a=not-a-token; theme=dark",
+		},
+		{
+			name:   "空 Cookie 头",
+			header: "",
+			host:   "127.0.0.1:54896",
+			want:   "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := filterCookies(c.header, c.host)
+			if got != c.want {
+				t.Fatalf("filterCookies(%q, %q) = %q, want %q", c.header, c.host, got, c.want)
+			}
+		})
 	}
 }

@@ -20,6 +20,7 @@ package gateway
 import (
 	"context"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -241,6 +242,14 @@ func (g *Gateway) route(w http.ResponseWriter, r *http.Request, target *url.URL)
 			if origin := pr.Out.Header.Get("Origin"); origin != "" {
 				pr.Out.Header.Set("Origin", target.Scheme+"://"+target.Host)
 			}
+			// 过滤历史端口的 dsh-auth-* cookie：cookie 的 domain 是
+			// 127.0.0.1（不含端口），每次启动后端端口变化都会新增一个
+			// dsh-auth-<salt>（30 天过期），累积后请求头超过 Node 的
+			// maxHeaderSize（16KB）触发 431，script/API 全部加载失败。
+			// 只保留 authority 与当前后端 host 一致的 cookie。
+			if cookie := pr.Out.Header.Get("Cookie"); cookie != "" {
+				pr.Out.Header.Set("Cookie", filterCookies(cookie, target.Host))
+			}
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			ct := resp.Header.Get("Content-Type")
@@ -263,6 +272,58 @@ func (g *Gateway) route(w http.ResponseWriter, r *http.Request, target *url.URL)
 
 // seedMarker 是 bridge.js 中共享存储种子的占位符，注入时替换为 JSON。
 const seedMarker = "/*__DSH_SHARED_SEED__*/"
+
+// dshAuthPrefix 是 dsh 认证 cookie 名前缀（browser-auth 按 Host 派生）。
+const dshAuthPrefix = "dsh-auth-"
+
+// filterCookies 过滤 Cookie 头里 authority 与当前后端 host 不一致的
+// dsh-auth-* cookie（其余 cookie 原样保留）。dsh 认证 cookie 的 value 是
+// v1.<base64url JSON>.<sig>，JSON 的 authority 字段记录签发时的后端
+// host（127.0.0.1:<port>）；cookie 的 domain 不含端口，历史端口的 cookie
+// 会被 WKWebView 一并带上，累积超过 Node maxHeaderSize（16KB）时后端返回
+// 431。解析失败或非 dsh-auth 的 cookie 一律保留（不阻断请求）。
+func filterCookies(header, host string) string {
+	if !strings.Contains(header, dshAuthPrefix) {
+		return header
+	}
+	parts := strings.Split(header, "; ")
+	kept := make([]string, 0, len(parts))
+	for _, part := range parts {
+		name, value, _ := strings.Cut(part, "=")
+		if strings.HasPrefix(name, dshAuthPrefix) && !authCookieMatches(value, host) {
+			continue
+		}
+		kept = append(kept, part)
+	}
+	return strings.Join(kept, "; ")
+}
+
+// authCookieMatches 解码 dsh 认证 cookie 的 payload，报告其 authority 是否
+// 与 host 一致。value 形如 v1.<base64url JSON>.<sig>；payload 解析失败时
+// 返回 true（保守保留，让后端自行判定）。
+func authCookieMatches(value, host string) bool {
+	dot1 := strings.IndexByte(value, '.')
+	if dot1 < 0 {
+		return true
+	}
+	rest := value[dot1+1:]
+	dot2 := strings.IndexByte(rest, '.')
+	if dot2 < 0 {
+		return true
+	}
+	payload := rest[:dot2]
+	raw, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		return true
+	}
+	var claims struct {
+		Authority string `json:"authority"`
+	}
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		return true
+	}
+	return claims.Authority == host
+}
 
 // injectIndex 把 runtime.js 与 bridge 注入到 <head> 中（未找到 <head> 时
 // 跳过）。nonce 用于幂等：已注入的响应不再重复注入。bridge 内嵌共享存储
