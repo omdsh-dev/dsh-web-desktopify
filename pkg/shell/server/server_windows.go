@@ -29,7 +29,9 @@ const (
 // exec；Job Object 关联由 attachToJob 在 Start 成功后完成。
 func command(exeDir, profile, port, dshHome string) *exec.Cmd {
 	server := filepath.Join(exeDir, Name)
-	cmd := exec.Command(server, "--profile", profile, "--port", port)
+	// --no-open：桌面壳自己就是窗口，不需要 dsh web-app 再拉起系统默认
+	// 浏览器（dev 命令同款参数，见 internal/cli/dev.go runWeb）。
+	cmd := exec.Command(server, "--profile", profile, "--port", port, "--no-open")
 	cmd.Env = os.Environ()
 	if dshHome != "" {
 		cmd.Env = append(cmd.Env, "DSH_HOME="+dshHome)

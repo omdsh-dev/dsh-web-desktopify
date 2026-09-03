@@ -42,7 +42,9 @@ func shellQuote(s string) string {
 // 时机不受控），由调用方经 Process.Stop 显式终止。
 func command(exeDir, profile, port, dshHome string) *exec.Cmd {
 	server := filepath.Join(exeDir, Name)
-	args := []string{"--profile", profile, "--port", port}
+	// --no-open：桌面壳自己就是窗口，不需要 dsh web-app 再拉起系统默认
+	// 浏览器（dev 命令同款参数，见 internal/cli/dev.go runWeb）。
+	args := []string{"--profile", profile, "--port", port, "--no-open"}
 
 	shell := os.Getenv("SHELL")
 	rc := rcFileFor(shell)
