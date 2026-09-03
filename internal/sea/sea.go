@@ -1,7 +1,4 @@
-// Package sea 把已安装的 dsh profile 打包为 SEA（Single Executable
-// Application）单文件后端。全部产物在 target/<name>/sea/ 内：闭包
-// node_modules、dsh-bridge 桥、config/ 资源、sea-entry.mjs 与
-// tsdown.config.mjs，最后用 tsdown 产出 sea/bin/dsh。
+// Package sea 把 dsh profile 打包为 SEA 单文件后端（bin/dsh）。
 package sea
 
 import (
@@ -21,17 +18,14 @@ import (
 //go:embed all:templates
 var templates embed.FS
 
-// 复制时排除的 node_modules 簿记条目（非包实体）。
+// skipEntries 是复制闭包时跳过的 node_modules 簿记条目。
 var skipEntries = map[string]bool{
 	".store":        true,
 	".nub":          true,
 	".modules.yaml": true,
 }
 
-// 打包模板（sea-entry.mjs / tsdown.config.mjs）以 go:embed 内嵌在
-// templates/ 下。
-
-// bridgeName 是闭包内 CJS 桥的包名（sea.Build 写入 node_modules 下）。
+// bridgeName 是闭包内 CJS 桥的包名。
 const bridgeName = "dsh-bridge"
 
 // bridgePkgJSON / bridgeIndex 是 dsh-bridge 桥的内容：CJS 模块经
@@ -109,14 +103,21 @@ func Build(ws string, cfg *config.Config, deployDir, dst string) error {
 
 	// 3) 资源：dsh 主包的 config/ 与 package.json（从闭包内 dsh 实体取，
 	// 实体在 .pnpm 虚拟存储，顶层 @deepseek-ai/dsh 是指向它的链接）。
+	// config/ 是可选资源目录：0.1.2-rc.1 起 agent-presets 的 presets 移入
+	// @deepseek-ai/dsh-agent-presets 包（自带 presets/），dsh 主包不再发布
+	// config/，存在才复制（兼容旧版本）。
 	dshLink := filepath.Join(nmDst, "@deepseek-ai", "dsh")
 	dshPkg, err := filepath.EvalSymlinks(dshLink)
 	if err != nil {
 		return fmt.Errorf("解析闭包内 dsh 实体: %w", err)
 	}
 	fmt.Printf("==> 复制 dsh 运行时资源（%s）\n", dshPkg)
-	if err := fsutil.CopyDir(filepath.Join(dshPkg, "config"), filepath.Join(staging, "config")); err != nil {
-		return fmt.Errorf("copy config: %w", err)
+	if info, err := os.Stat(filepath.Join(dshPkg, "config")); err == nil && info.IsDir() {
+		if err := fsutil.CopyDir(filepath.Join(dshPkg, "config"), filepath.Join(staging, "config")); err != nil {
+			return fmt.Errorf("copy config: %w", err)
+		}
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("stat config: %w", err)
 	}
 	if err := fsutil.CopyFile(filepath.Join(dshPkg, "package.json"), filepath.Join(staging, "package.json")); err != nil {
 		return fmt.Errorf("copy package.json: %w", err)

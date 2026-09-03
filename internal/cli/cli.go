@@ -44,8 +44,9 @@ const usage = `dsh-web-desktopify — 把 dsh 的 --profile web 与 cordis.patch
   icon.svg           应用图标（可选，dsh.desktop.icon 引用）
 
 settings.yaml 等用户运行时数据不属于工作区：打包应用按 dshHome 策略
-在 XDG_DATA_HOME/<name>（xdg）生成；dev 使用工作区本地临时目录
-.dsh-store（保留已有数据，只补缺失布局，不污染全局数据目录）。
+在 XDG_DATA_HOME/<name>（xdg）生成；dev 使用工作区本地目录
+.dsh-store（会话数据跨启动保留，不污染全局数据目录），profiles/web
+由 dsh 原生管理（工作区依赖以 link: 形式装入 profile）。
 
 全部产物在 node_modules/.dsh-web-desktopify/ 下（cache/<step>/<digest>/，
 node_modules 已被 git 忽略）。
@@ -180,10 +181,10 @@ func checkPlatform(platform string) error {
 // 路径。
 //
 // 产物按输入指纹内容寻址缓存（node_modules/.dsh-web-desktopify/cache/
-// <step>/<digest>/）：检查只
-// 关心目录在不在，不比对状态记录；依赖传导由 digest 链天然保证——
-// deploy 重建后其 digest 变化，SEA / 平台组装的 digest 随之变化，必然
-// 重建。--force 全部重建（deploy 重新 pnpm deploy，不再复用旧依赖闭包）。
+// <step>/<digest>/）：检查只关心目录在不在，不比对状态记录；依赖传导由
+// digest 链保证——deploy 重建后其 digest 变化，SEA / 平台组装的 digest
+// 随之变化，必然重建。--force 全部重建（deploy 重新 pnpm deploy，不再
+// 复用旧依赖闭包）。
 func Bundle(ws, platform string, force, install, skipInstall bool) (string, error) {
 	if err := checkPlatform(platform); err != nil {
 		return "", err
@@ -381,10 +382,10 @@ func shortHash(h string) string {
 }
 
 // Dev 基于工作区直接起一个 dsh web 并打开浏览器页面（不组装桌面应用）。
-// DSH_HOME 为工作区本地临时目录 .dsh-store，profiles/web 整目录软链到
-// 工作区；目录还不是工作区时从模板兜底创建工程文件并安装依赖。退出时
-// 删除 dsh 写入工作区的 pnpm-workspace.yaml（仅当启动时本来没有）。
-// **不清理 .dsh-store**：dev 会话数据跨启动保留。
+// DSH_HOME 为工作区本地目录 .dsh-store，profiles/web 由 dsh 原生管理
+// （initProfile + plugin add link: 工作区依赖）；目录还不是工作区时从模板
+// 兜底创建工程文件并安装依赖。**不清理 .dsh-store**：dev 会话数据跨启动
+// 保留。
 func Dev(ws string, skipInstall, _ bool) error {
 	_, ws, err := resolveWorkspace(ws)
 	if err != nil {
@@ -411,21 +412,23 @@ func Dev(ws string, skipInstall, _ bool) error {
 	}
 
 	// 2) 构造 dev 运行时 DSH_HOME：工作区 .dsh-store（保留已有数据），
-	//    profiles/web 整目录软链到工作区。
+	//    profiles/web 由 dsh 原生管理（initProfile + plugin add link: 工作区
+	//    依赖）。
 	homeDir, err := ensureDevHome(ws)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("==> dev home: %s\n", homeDir)
+	if _, err := ensureDevProfile(ws, homeDir); err != nil {
+		return err
+	}
 
 	// 3) 启动 dsh web（工作区闭包里的 dsh），解析就绪 URL。
 	dshBin := dshBin(ws)
 	if _, err := os.Stat(dshBin); err != nil {
 		return fmt.Errorf("工作区未安装 dsh（%s）；先 pnpm install 或去掉 --skip-install", dshBin)
 	}
-	hadWorkspace := fileExists(filepath.Join(ws, "pnpm-workspace.yaml"))
-	url, err := runWeb(dshBin, homeDir)
-	cleanupDevWorkspace(ws, hadWorkspace)
+	url, err := runWeb(dshBin, ws, homeDir)
 	if err != nil {
 		return err
 	}

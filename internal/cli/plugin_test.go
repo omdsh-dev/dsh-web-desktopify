@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/omdsh-dev/dsh-web-desktopify/internal/config"
 )
 
 func TestWithEnv(t *testing.T) {
@@ -40,24 +42,52 @@ func TestPrependPath(t *testing.T) {
 	}
 }
 
-// TestCleanupDevWorkspace：dsh 运行期间写入工作区的 pnpm-workspace.yaml
-// 在退出时被删除（仅当启动时本来没有）；启动时已有则保留。
-func TestCleanupDevWorkspace(t *testing.T) {
-	ws := t.TempDir()
+// TestDevProfileLinked：profile 未初始化时返回 false；依赖全部以 link:
+// 形式装好时返回 true；缺依赖或非 link 时返回 false。
+func TestDevProfileLinked(t *testing.T) {
+	cfg := &config.Config{
+		Dependencies: map[string]string{
+			"@morlay/better-session": "^0.0.12",
+			"@deepseek-ai/dsh":        "0.1.2-rc.1",
+		},
+	}
+	dir := t.TempDir()
 
-	// 启动时没有 → 退出时删除。
-	cleanupDevWorkspace(ws, false)
-	if _, err := os.Stat(filepath.Join(ws, "pnpm-workspace.yaml")); !os.IsNotExist(err) {
-		t.Fatalf("应删除 dsh 写入的 pnpm-workspace.yaml（%v）", err)
+	// 未初始化（package.json 缺失）→ false。
+	if linked, err := devProfileLinked(dir, cfg); err != nil || linked {
+		t.Fatalf("未初始化应返回 false（%v, %v）", linked, err)
 	}
 
-	// 启动时已有 → 退出时保留。
-	if err := os.WriteFile(filepath.Join(ws, "pnpm-workspace.yaml"), []byte("keep"), 0o644); err != nil {
+	// 全部 link: → true。
+	manifest := `{"dependencies": {
+		"@morlay/better-session": "link:/ws",
+		"@deepseek-ai/dsh": "link:/ws"
+	}}`
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cleanupDevWorkspace(ws, true)
-	raw, err := os.ReadFile(filepath.Join(ws, "pnpm-workspace.yaml"))
-	if err != nil || string(raw) != "keep" {
-		t.Fatalf("启动时已有的 pnpm-workspace.yaml 应保留（%q, %v）", raw, err)
+	if linked, err := devProfileLinked(dir, cfg); err != nil || !linked {
+		t.Fatalf("全部 link 应返回 true（%v, %v）", linked, err)
+	}
+
+	// 缺一个依赖 → false。
+	manifest = `{"dependencies": {"@morlay/better-session": "link:/ws"}}`
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if linked, err := devProfileLinked(dir, cfg); err != nil || linked {
+		t.Fatalf("缺依赖应返回 false（%v, %v）", linked, err)
+	}
+
+	// 非 link spec → false。
+	manifest = `{"dependencies": {
+		"@morlay/better-session": "^0.0.12",
+		"@deepseek-ai/dsh": "link:/ws"
+	}}`
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if linked, err := devProfileLinked(dir, cfg); err != nil || linked {
+		t.Fatalf("非 link spec 应返回 false（%v, %v）", linked, err)
 	}
 }

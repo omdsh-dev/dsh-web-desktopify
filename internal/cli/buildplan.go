@@ -1,7 +1,7 @@
 // 打包链内容寻址缓存 DAG：deploy 闭包 → SEA 后端 → 壳二进制 → 平台
 // 组装。产物按输入指纹内容寻址存放：node_modules/.dsh-web-desktopify/
 // cache/<step>/<digest>/，命中检查只关心目录在不在；构建先落
-// build/<uuid>/，完成后原子 mv 进 cache。依赖传导由 digest 链天然保证：
+// build/<uuid>/，完成后原子 mv 进 cache。依赖传导由 digest 链保证：
 // 依赖步重建后其 digest 变化，下游 digest 随之变化，必然重建。
 package cli
 

@@ -21,20 +21,25 @@ dsh-web-desktopify bundle --install examples/custom    # 打包并安装到当�
 cd examples/custom && dsh-web-desktopify plugin add @foo/bar   # 向工作区加插件（代理 dsh plugin add）
 ```
 
+## 命令
+
 - `dev [<workspace>]` — 基于工作区直接起 `dsh web` 并打开浏览器页面
   （Ctrl+C 退出）。缺省当前目录；目录还不是工作区（缺 package.json）时
-  自动从模板创建工程文件并安装依赖，可在任意目录起步。运行时 DSH_HOME
-  为工作区本地临时目录 `.dsh-store`（每次 dev 重建，不污染打包应用使用
-  的全局数据目录），`profiles/web` 符号链接指向工作区，工作区配置修改
-  直接生效
-- `bundle <workspace>` — 打包为平台应用，产物在 `target/<name>/` 下。默认基于
-  工作区内容 hash 增量：输入无变化时直接复用上次产物；`--force` 忽略缓存
-  全新打包；`--install` 打包后安装（macOS `/Applications`、Linux XDG data +
-  `.desktop`、Windows `%LOCALAPPDATA%\Programs`）
+  自动从模板创建工程文件并安装依赖。运行时 DSH_HOME 为工作区本地目录
+  `.dsh-store`（会话数据跨启动保留，不污染打包应用使用的全局数据目录），
+  `profiles/web` 由 dsh 原生管理：工作区依赖以 `link:` 形式经
+  `dsh plugin add` 装入 profile，工作区配置修改直接生效
+- `bundle <workspace>` — 打包为平台应用。产物按输入指纹内容寻址缓存于
+  `node_modules/.dsh-web-desktopify/cache/<step>/<digest>/`：输入无变化时
+  直接复用上次产物；`--force` 忽略缓存全新打包；`--install` 打包后安装
+  （macOS `/Applications`、Linux XDG data + `.desktop`、Windows
+  `%LOCALAPPDATA%\Programs`）
 - `plugin add <package...>` — 代理 `dsh plugin add`：在工作区跑 `pnpm add`，
   并把声明 `dsh.bundle` 的依赖自动加入 `dsh.profile.bundles`。不安装到全局
   `~/.dsh`，只改工作区（默认当前目录，`--workspace=<path>` 指定其他工作区）。
   与官方 dsh 的 reconcile 语义一致：bundle 包自动入层，普通依赖只警告不入层
+
+## 工作区
 
 工作区是拍平的 desktop 定义：`package.json`（name/version/dependencies +
 `dsh.profile.bundles` + `dsh.desktop`）+ `cordis.patch.yml`（patch 层）+
@@ -45,5 +50,8 @@ dsh 验证（见 [docs/workspace.md](docs/workspace.md)）。
 用 `go tool dsh-web-desktopify`（go.mod `tool` 指令注册，无需
 `go build`）。
 
+## 文档
+
 - [docs/workspace.md](docs/workspace.md) — 工作区结构与「先验证，再打包」流程
-- [docs/architecture.md](docs/architecture.md) — 产物、架构与构建原理
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 产物、架构与构建原理
+- [docs/CODING_GUIDELINE.md](docs/CODING_GUIDELINE.md) — 项目约定

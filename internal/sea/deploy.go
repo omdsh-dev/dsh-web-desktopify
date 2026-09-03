@@ -1,16 +1,4 @@
-// SEA 闭包部署：用 pnpm 官方机制从 workspace 导出生产依赖闭包，替代
-// 手工复制 node_modules（后者在 monorepo 内嵌工作区会遇到 symlink 环 /
-// 层级丢失 / devDeps 混入等问题）。
-//
-// 流程（与 dsh-web-desktopify 工作区约定一致）：
-//  1. 向上定位最近的 pnpm-workspace.yaml（monorepo 内嵌工作区时在仓库根）；
-//  2. 在 workspace 根跑 `pnpm --filter=<包名> deploy --prod <staging>`，
-//     导出该包的生产依赖闭包（package.json 依赖改写为 file: 指向本地包，
-//     node_modules 按 pnpm 布局安装）；
-//  3. deploy 生成的 pnpm-workspace.yaml 会含 allowBuilds 占位符
-//     （`set this to true or false`）且缺 minimumReleaseAge——手动修正为
-//     全部放行 + minimumReleaseAge: 0；
-//  4. 在 staging 跑 `pnpm install`，补全被 deploy 略过的构建脚本。
+// SEA 闭包部署：用 pnpm deploy 从 workspace 导出生产依赖闭包。
 package sea
 
 import (
@@ -43,13 +31,8 @@ func findWorkspaceRoot(ws string) (string, error) {
 }
 
 // fixDeployWorkspace 修正 pnpm deploy 生成的 pnpm-workspace.yaml：
-// allowBuilds 的 `set this to true or false` 占位符改为 true，补
-// minimumReleaseAge: 0（deploy 继承的 minimumReleaseAge 可能阻止安装
-// 新版包），并补 autoInstallPeers: true——deploy 生成的配置不继承工作区
-// 的 autoInstallPeers，而 dsh-app-boot 等核心包把运行时必需的依赖
-// （cordis-plugin-group、dsh-invariants 等）声明为 peerDependencies 且
-// 全依赖树无普通依赖兜底，staging 补 install 时缺 autoInstallPeers 会漏装
-// 这些 peer，SEA 启动即 ERR_MODULE_NOT_FOUND。
+// allowBuilds 占位符改为 true，补 minimumReleaseAge: 0、
+// autoInstallPeers: true 与 nodeLinker: hoisted。
 func fixDeployWorkspace(wsFile string) error {
 	raw, err := os.ReadFile(wsFile)
 	if err != nil {
@@ -64,10 +47,6 @@ func fixDeployWorkspace(wsFile string) error {
 	if !strings.Contains(s, "autoInstallPeers") {
 		s = strings.TrimRight(s, "\n") + "\nautoInstallPeers: true\n"
 	}
-	// nodeLinker hoisted：deploy 生成的配置默认 isolated，peer 依赖被装进
-	// 依赖者自己的 .pnpm 目录，loader entry 包（dsh-bash-sandbox 等）运行时
-	// 从自身目录向上解析 peer 会落空（顶层只放直接依赖）。hoisted 把 peer
-	// 解析结果扁平提升到顶层 node_modules，闭包内任意包都能解析到。
 	if !strings.Contains(s, "nodeLinker") {
 		s = strings.TrimRight(s, "\n") + "\nnodeLinker: hoisted\n"
 	}
@@ -75,8 +54,7 @@ func fixDeployWorkspace(wsFile string) error {
 }
 
 // DeployClosure 在 workspace 根用 pnpm deploy 导出 cfg 的生产依赖闭包到
-// dst（调用方提供的暂存目录，pnpm deploy 不自动创建目标目录的父路径，
-// 须先手动 MkdirAll），并补 install。完成后 node_modules 位于
+// dst（调用方提供的暂存目录），并补 install。完成后 node_modules 位于
 // dst/node_modules。
 func DeployClosure(ws string, cfg *config.Config, dst string) error {
 	absWS, err := filepath.Abs(ws)
@@ -94,9 +72,6 @@ func DeployClosure(ws string, cfg *config.Config, dst string) error {
 	}
 
 	// 1) pnpm deploy --prod --ignore-scripts <staging>（在 workspace 根跑）。
-	// --ignore-scripts：deploy 生成的 pnpm-workspace.yaml 含 allowBuilds
-	// 占位符（`set this to true or false`）会触发 ERR_PNPM_IGNORED_BUILDS；
-	// 构建脚本推迟到第 3 步（修正配置后）的 pnpm install 执行。
 	// 独立 workspace（ws 就是 workspace 根）直接 deploy 当前包；
 	// monorepo 内嵌工作区（根在上层）用 --filter 选择该包。
 	bin, err := pm.Bin()
@@ -130,9 +105,8 @@ func DeployClosure(ws string, cfg *config.Config, dst string) error {
 		fmt.Printf("==> 修正 deploy workspace 配置（allowBuilds/minimumReleaseAge/autoInstallPeers/nodeLinker）\n")
 	}
 
-	// 3) 在 staging 补 pnpm install（--ignore-scripts：deploy 生成的
-	// workspace 配置含 allowBuilds 占位符会触发 ERR_PNPM_IGNORED_BUILDS；
-	// 闭包从 store 克隆已含构建产物，跳过脚本不影响运行时）。
+	// 3) 在 staging 补 pnpm install（--ignore-scripts：闭包从 store 克隆
+	// 已含构建产物，跳过脚本不影响运行时）。
 	fmt.Printf("==> 补 pnpm install（%s）\n", staging)
 	installCmd := exec.Command(bin, "install", "--no-frozen-lockfile", "--ignore-scripts")
 	installCmd.Dir = staging

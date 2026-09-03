@@ -10,10 +10,10 @@ examples/custom/
                       - dsh.profile.bundles：cordis bundle 列表
                       - dsh.desktop：桌面特有（id/window/icon/dshHome）
   cordis.patch.yml    profile patch 层（dsh 应用在 bundle 层之后）
-  pnpm-workspace.yaml 安装工程文件（nodeLinker hoisted + allowBuilds）
+  pnpm-workspace.yaml 安装工程文件（allowBuilds / autoInstallPeers）
   .npmrc              registry 映射（@morlay → GitHub npm）与本地 store
   icon.svg            应用图标（可选，dsh.desktop.icon 引用）
-  .dsh-store/         dev 运行时目录（本地临时 DSH_HOME，每次 dev 重建；
+  .dsh-store/         dev 运行时目录（本地 DSH_HOME，会话数据跨启动保留；
                       被 .gitignore 忽略，可随时删除）
 ```
 
@@ -24,7 +24,7 @@ examples/custom/
   "name": "dsh",
   "version": "0.1.0",
   "private": true,
-  "dependencies": { "@deepseek-ai/dsh": "0.1.0-rc.6" },
+  "dependencies": { "@deepseek-ai/dsh": "0.1.2-rc.1" },
   "dsh": {
     "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"] },
     "desktop": {
@@ -46,10 +46,9 @@ examples/custom/
   - 缺省 / `xdg` — `xdg.DataHome/<name>`（[adrg/xdg](https://github.com/adrg/xdg)
     规范：Linux `~/.local/share`、macOS `~/Library/Application Support`
     等）。应用内置 dsh-home 种子，每次启动强制 profile 为实体种子：与
-    种子指纹（.seed-hash，打包时工作区内容 hash）不一致（新版本 / dev
-    或旧版残留的 symlink / 旧实体拷贝）时覆盖重建，之后读写都在拷贝上，
-    完全独立、不污染 `~/.dsh`。dev 不使用该目录：dev 的 DSH_HOME 是
-    工作区本地临时目录 `.dsh-store`（每次重建），两者互不干扰
+    种子指纹（.seed-hash，打包时工作区内容 hash）不一致时覆盖重建，之后
+    读写都在拷贝上，完全独立、不污染 `~/.dsh`。dev 不使用该目录：dev 的
+    DSH_HOME 是工作区本地目录 `.dsh-store`，两者互不干扰
   - `env` — 不设置 DSH_HOME，继承环境（`$DSH_HOME` 或默认 `~/.dsh`）
   - 绝对路径 — DSH_HOME 固定为该路径，同样强制种子落位
 
@@ -73,17 +72,19 @@ dsh-web-desktopify plugin add @morlay/session-persistence-rdb   # 工作区 pnpm
 dsh-web-desktopify plugin add --workspace examples/custom @foo/bar   # 从任意目录指定工作区
 ```
 
-`plugin add` 复用 dev 的 DSH_HOME 布局（工作区 `.dsh-store/profiles/web`
-→ 工作区），调用工作区闭包里的 `dsh plugin --profile web add`：在工作区跑
-`pnpm add`，成功后在 `package.json` 里 reconcile `dsh.profile.bundles`——
-依赖中声明 `dsh.bundle`（patch 层）的包自动入层，被移除/失去声明的包出层，
-与官方 dsh 语义完全一致。
+`plugin add` 复用 dev 的 DSH_HOME 布局（工作区 `.dsh-store`），调用工作区
+闭包里的 `dsh plugin --profile web add`：在工作区跑 `pnpm add`，成功后在
+`package.json` 里 reconcile `dsh.profile.bundles`——依赖中声明 `dsh.bundle`
+（patch 层）的包自动入层，被移除/失去声明的包出层，与官方 dsh 语义完全
+一致。
 
 patch 与插件组合确认可用后，`bundle` 只是把它包装为桌面应用（复用工作区
 已安装的闭包，不再重复安装）。`dev` 命令做的也是同一件事：DSH_HOME 为
-工作区本地临时目录 `.dsh-store`（每次 dev 重建，不污染打包应用使用的全局
-数据目录），`profiles/web` 符号链接指向工作区，再起 `dsh web` 并打开
-浏览器——工作区的 package.json / cordis.patch.yml 修改直接生效。
+工作区本地目录 `.dsh-store`（不污染打包应用使用的全局数据目录），
+`profiles/web` 由 dsh 原生管理——工作区依赖以 `link:` 形式经
+`dsh plugin add` 装入 profile（指向工作区闭包里的包实体），再起
+`dsh web` 并打开浏览器——工作区的 package.json / cordis.patch.yml 修改
+直接生效。
 
 ## patch 合成语义
 
@@ -92,5 +93,5 @@ bundle 包自带的 patch 层，最后叠加 `cordis.patch.yml`（用户层）�
 负责安装、打包与分发，不修改任何 patch 语义。`settings.yaml`、`storages/`、
 `sessions/` 等用户运行时数据不属于工作区：打包应用在目标 DSH_HOME 中生成
 （xdg 策略为 `XDG_DATA_HOME/<name>`），dev 则在工作区 `.dsh-store/` 下
-（临时目录，每次 dev 重建）。打包时工作区被装配为应用的 DSH_HOME 种子
+（会话数据跨启动保留）。打包时工作区被装配为应用的 DSH_HOME 种子
 （dsh 固定从 `$DSH_HOME/profiles/web` 解析 profile）。

@@ -1,6 +1,6 @@
 // `plugin add` 子命令：代理 dsh 的 plugin add，但不安装到全局 DSH_HOME，
 // 而是修改工作区的 dsh.profile.bundles。复用 dev 的运行时布局
-// （.dsh-store + profiles/web → 工作区），调用工作区闭包里的
+// （.dsh-store + dsh 原生管理的 profiles/web），调用工作区闭包里的
 // `dsh plugin --profile web add <pkg...>` 完成 pnpm add 与 bundles reconcile。
 package cli
 
@@ -33,7 +33,7 @@ func PluginAdd(ws string, pkgs []string, skipInstall bool) error {
 	}
 
 	// 2) 构造 dev 运行时 DSH_HOME（与 dev 一致）：工作区 .dsh-store，
-	//    profiles/web 整目录软链到工作区（只补缺失，不重建——dev 可能
+	//    profiles/web 由 dsh 原生管理（只补缺失，不重建——dev 可能
 	//    正在运行）。
 	homeDir, err := ensureDevHome(ws)
 	if err != nil {
@@ -58,9 +58,7 @@ func PluginAdd(ws string, pkgs []string, skipInstall bool) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	fmt.Printf("==> exec: %s（DSH_HOME=%s）\n", cmd.String(), homeDir)
-	hadWorkspace := fileExists(filepath.Join(ws, "pnpm-workspace.yaml"))
 	err = cmd.Run()
-	cleanupDevWorkspace(ws, hadWorkspace)
 	if err != nil {
 		return fmt.Errorf("dsh plugin add: %w", err)
 	}

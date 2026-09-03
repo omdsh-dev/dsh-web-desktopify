@@ -3,7 +3,6 @@ package cli
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -42,46 +41,16 @@ func TestToolFingerprint(t *testing.T) {
 	_ = toolFingerprint(partial)
 }
 
-// TestEnsureDevHome：profiles/web 整目录软链到工作区；已有数据保留
-// （不清理 .dsh-store）。
+// TestEnsureDevHome：dev home 是工作区本地 .dsh-store，构造幂等且保留
+// 已有数据（不清理）。
 func TestEnsureDevHome(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows 符号链接需要特权")
-	}
 	ws := t.TempDir()
-	// 工作区工程文件。
-	for _, f := range []string{"package.json", "cordis.patch.yml"} {
-		if err := os.WriteFile(filepath.Join(ws, f), []byte("{}"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.MkdirAll(filepath.Join(ws, "node_modules"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
 	home, err := ensureDevHome(ws)
 	if err != nil {
 		t.Fatalf("ensureDevHome: %v", err)
 	}
 	if home != devHome(ws) {
 		t.Fatalf("home 应为 %s，得到 %s", devHome(ws), home)
-	}
-
-	// profiles/web 是指向工作区的符号链接。
-	link := filepath.Join(home, "profiles", "web")
-	info, err := os.Lstat(link)
-	if err != nil {
-		t.Fatalf("profiles/web 应存在: %v", err)
-	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		t.Fatal("profiles/web 应为符号链接")
-	}
-	want, err := filepath.EvalSymlinks(ws)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, err := filepath.EvalSymlinks(link); err != nil || got != want {
-		t.Fatalf("链接应指向 %s，得到 %s（%v）", want, got, err)
 	}
 
 	// 已有数据保留：写入 settings.yaml 后再次构造不清理。
@@ -133,29 +102,12 @@ func TestWorkspaceHashIgnoresDevStore(t *testing.T) {
 	}
 }
 
-// TestEnsureDevHomeKeep：已有链接保持，缺失时创建（幂等，不重建）。
+// TestEnsureDevHomeKeep：重复构造幂等，不重建已有数据。
 func TestEnsureDevHomeKeep(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows 符号链接需要特权")
-	}
 	ws := t.TempDir()
-	for _, f := range []string{"package.json", "cordis.patch.yml"} {
-		if err := os.WriteFile(filepath.Join(ws, f), []byte("{}"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.MkdirAll(filepath.Join(ws, "node_modules"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	home, err := ensureDevHome(ws)
 	if err != nil {
 		t.Fatalf("首次构造: %v", err)
-	}
-	link := filepath.Join(home, "profiles", "web")
-	if got, err := filepath.EvalSymlinks(link); err != nil {
-		t.Fatalf("profiles/web 应是指向工作区的链接: %v", err)
-	} else if want, _ := filepath.EvalSymlinks(ws); got != want {
-		t.Fatalf("链接应指向 %s，得到 %s", want, got)
 	}
 
 	// 再次调用（幂等）：不报错、不重建已有数据。

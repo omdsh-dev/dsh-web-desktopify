@@ -23,10 +23,7 @@ import (
 var templates embed.FS
 
 // DshClosureDir 向上查找第一个 node_modules 里有 dsh 主包的目录（工作区
-// 自身或祖先）。monorepo 内嵌工作区（dsh 在 peerDependencies，hoisted 到
-// workspace 根 node_modules）时返回根；找不到返回空串。不依赖
-// pnpm-workspace.yaml 判定——工作区可能被 deploy 产物污染出多余的
-// workspace 配置，但 dsh 闭包位置是唯一事实。
+// 自身或祖先；monorepo 内嵌工作区时 hoisted 到根）。找不到返回空串。
 func DshClosureDir(ws string) string {
 	dir, err := filepath.Abs(ws)
 	if err != nil {
@@ -44,9 +41,8 @@ func DshClosureDir(ws string) string {
 	}
 }
 
-// Installed 报告闭包是否已安装：工作区或向上最近的 workspace 根
-// （monorepo 内嵌工作区，dsh 在 peerDependencies 时 hoisted 到根
-// node_modules）的 node_modules 中存在 dsh 主包。
+// Installed 报告闭包是否已安装：工作区或向上最近的 workspace 根的
+// node_modules 中存在 dsh 主包。
 func Installed(ws string) bool {
 	return DshClosureDir(ws) != ""
 }

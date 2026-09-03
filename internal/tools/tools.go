@@ -1,6 +1,6 @@
 // Package tools 管理构建工具链（工作区 node_modules/.dsh-web-desktopify/
-// tools/）。构建工具（tsdown 打包 SEA）按需安装到 bundle 产物根，与工作
-// 区依赖解耦。工程文件模板以 go:embed 内嵌在 templates/ 下。
+// tools/）。构建工具（tsdown 打包 SEA）按需安装，与工作区依赖解耦。
+// 工程文件模板以 go:embed 内嵌在 templates/ 下。
 package tools
 
 import (
@@ -17,7 +17,7 @@ import (
 //go:embed all:templates
 var templates embed.FS
 
-// DirName 是工具链目录名（bundle 产物根下）。
+// DirName 是工具链目录名。
 const DirName = "tools"
 
 // Dir 返回工具链目录（位于工作区 node_modules/.dsh-web-desktopify/tools）。
