@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,8 +15,7 @@ import (
 // 窗口经未接线网关加载导致 runtime.js 503、window.wails 缺失"的双网关结构
 // ——页面必须由被 wails 接线的这同一个网关伺服。
 func TestWailsWire(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	gw, err := Start("127.0.0.1:1", ctx)
 	if err != nil {

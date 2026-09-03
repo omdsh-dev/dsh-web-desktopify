@@ -13,10 +13,10 @@ import (
 //	Contents/Resources/dsh.icns
 //	Contents/{config,node_modules,package.json,dsh-home}
 //	Contents/Info.plist
-func assembleMacOS(in Inputs, dst string) error {
+func assembleMacOS(in Inputs, dst string) (Output, error) {
 	appRoot := dst
 	if err := os.MkdirAll(appRoot, 0o755); err != nil {
-		return err
+		return Output{}, err
 	}
 	fmt.Printf("==> 组装 macOS 应用 %s\n", appRoot)
 	contents := filepath.Join(appRoot, "Contents")
@@ -25,26 +25,26 @@ func assembleMacOS(in Inputs, dst string) error {
 	// macOS 布局：bin 在 Contents/MacOS，资源在 Contents/。
 	// 复用 assembleLayout 时用临时目录再搬移，避免重复实现。
 	if err := os.MkdirAll(contents, 0o755); err != nil {
-		return err
+		return Output{}, err
 	}
 	if _, err := assembleLayout(in, contents); err != nil {
-		return err
+		return Output{}, err
 	}
 	// assembleLayout 产出的是 bin/；macOS 需要 MacOS/。
 	if err := os.Rename(filepath.Join(contents, "bin"), binDir); err != nil {
-		return err
+		return Output{}, err
 	}
 
 	// 图标（可选）。
 	resDir := filepath.Join(contents, "Resources")
 	if err := os.MkdirAll(resDir, 0o755); err != nil {
-		return err
+		return Output{}, err
 	}
 	iconPath := ""
 	if in.Cfg.Desktop.Icon != "" {
 		p, err := iconFor(in, resDir, "darwin")
 		if err != nil {
-			return err
+			return Output{}, err
 		}
 		iconPath = p
 		// iconset 是 iconutil 的中间产物，icns 生成后清理。
@@ -82,8 +82,8 @@ func assembleMacOS(in Inputs, dst string) error {
 </plist>
 `, in.Cfg.Name, in.Cfg.Name, iconKey, in.Cfg.Desktop.ID, in.Cfg.Version, in.Cfg.Version)
 	if err := os.WriteFile(filepath.Join(contents, "Info.plist"), []byte(plist), 0o644); err != nil {
-		return err
+		return Output{}, err
 	}
 
-	return nil
+	return NewOutput(contents), nil
 }

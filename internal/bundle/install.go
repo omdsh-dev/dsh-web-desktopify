@@ -39,7 +39,8 @@ func Install(appRoot string, cfg *config.Config) error {
 		if err := fsutil.CopyDir(appRoot, dst); err != nil {
 			return fmt.Errorf("安装到 %s: %w", dst, err)
 		}
-		// freedesktop 启动器。
+		// freedesktop 启动器。Exec 用引号包裹可执行路径（路径可能含空格，
+		// 如 XDG_DATA_HOME 在自定义位置时）。
 		appsDir := filepath.Join(xdg.DataHome, "applications")
 		if err := os.MkdirAll(appsDir, 0o755); err != nil {
 			return err
@@ -52,7 +53,7 @@ func Install(appRoot string, cfg *config.Config) error {
 		desktop := fmt.Sprintf(`[Desktop Entry]
 Type=Application
 Name=%s
-Exec=%s
+Exec="%s"
 %sTerminal=false
 `, cfg.Name, filepath.Join(dst, "bin", "dsh-shell"), iconLine)
 		if err := os.WriteFile(filepath.Join(appsDir, cfg.Name+".desktop"), []byte(desktop), 0o644); err != nil {

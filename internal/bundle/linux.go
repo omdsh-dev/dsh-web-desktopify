@@ -17,24 +17,24 @@ import (
 //	<Name>/share/icons/hicolor/（16–512 + scalable SVG）
 //
 // 完成后在 <dst> 内打包 <Name>.tar.gz（顶层目录 <Name>/）。
-func assembleLinux(in Inputs, dst string) error {
+func assembleLinux(in Inputs, dst string) (Output, error) {
 	appRoot := filepath.Join(dst, in.Cfg.Name)
 	if err := os.MkdirAll(appRoot, 0o755); err != nil {
-		return err
+		return Output{}, err
 	}
 	fmt.Printf("==> 组装 Linux 应用 %s\n", appRoot)
 	if _, err := assembleLayout(in, appRoot); err != nil {
-		return err
+		return Output{}, err
 	}
 
 	// 图标（可选）：share/icons/hicolor/。
 	if in.Cfg.Desktop.Icon != "" {
 		iconsRoot := filepath.Join(appRoot, "share", "icons")
 		if err := os.MkdirAll(iconsRoot, 0o755); err != nil {
-			return err
+			return Output{}, err
 		}
 		if _, err := iconFor(in, iconsRoot, "linux"); err != nil {
-			return err
+			return Output{}, err
 		}
 	}
 
@@ -42,9 +42,9 @@ func assembleLinux(in Inputs, dst string) error {
 	tarPath := filepath.Join(dst, in.Cfg.Name+".tar.gz")
 	fmt.Printf("==> 归档 %s\n", tarPath)
 	if err := tarGz(appRoot, tarPath, in.Cfg.Name); err != nil {
-		return fmt.Errorf("tar.gz: %w", err)
+		return Output{}, fmt.Errorf("tar.gz: %w", err)
 	}
-	return nil
+	return NewOutput(appRoot), nil
 }
 
 // tarGz 把 dir 打包为 tar.gz，归档内顶层目录名为 topName。

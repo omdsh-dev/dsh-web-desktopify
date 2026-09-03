@@ -40,12 +40,6 @@ import (
 //go:embed bridge.js
 var bridgeTemplate string
 
-// BridgeScript 返回注入脚本（bridge 经 window.wails.Call.ByName 把
-// localStorage 读写转接到共享存储服务）。
-func BridgeScript() string {
-	return bridgeTemplate
-}
-
 // Gateway 是壳网关服务的生命周期句柄。
 type Gateway struct {
 	srv    *http.Server
@@ -302,16 +296,16 @@ func filterCookies(header, host string) string {
 // 与 host 一致。value 形如 v1.<base64url JSON>.<sig>；payload 解析失败时
 // 返回 true（保守保留，让后端自行判定）。
 func authCookieMatches(value, host string) bool {
-	dot1 := strings.IndexByte(value, '.')
-	if dot1 < 0 {
+	_, after, ok := strings.Cut(value, ".")
+	if !ok {
 		return true
 	}
-	rest := value[dot1+1:]
-	dot2 := strings.IndexByte(rest, '.')
-	if dot2 < 0 {
+	rest := after
+	before0, _, ok0 := strings.Cut(rest, ".")
+	if !ok0 {
 		return true
 	}
-	payload := rest[:dot2]
+	payload := before0
 	raw, err := base64.RawURLEncoding.DecodeString(payload)
 	if err != nil {
 		return true

@@ -9,26 +9,9 @@ import (
 	"strings"
 
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/config"
+	"github.com/omdsh-dev/dsh-web-desktopify/internal/fsutil"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/pm"
 )
-
-// findWorkspaceRoot 向上查找最近的 pnpm-workspace.yaml，返回其目录。
-func findWorkspaceRoot(ws string) (string, error) {
-	dir, err := filepath.Abs(ws)
-	if err != nil {
-		return "", err
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "pnpm-workspace.yaml")); err == nil {
-			return dir, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", fmt.Errorf("向上未找到 pnpm-workspace.yaml（%s 及其父目录）", ws)
-		}
-		dir = parent
-	}
-}
 
 // fixDeployWorkspace 修正 pnpm deploy 生成的 pnpm-workspace.yaml：
 // allowBuilds 占位符改为 true，补 minimumReleaseAge: 0、
@@ -61,9 +44,9 @@ func DeployClosure(ws string, cfg *config.Config, dst string) error {
 	if err != nil {
 		return err
 	}
-	root, err := findWorkspaceRoot(absWS)
-	if err != nil {
-		return err
+	root := fsutil.FindUp(absWS, "pnpm-workspace.yaml")
+	if root == "" {
+		return fmt.Errorf("向上未找到 pnpm-workspace.yaml（%s 及其父目录）", ws)
 	}
 	fmt.Printf("==> deploy 闭包（workspace 根 %s）\n", root)
 	staging := dst

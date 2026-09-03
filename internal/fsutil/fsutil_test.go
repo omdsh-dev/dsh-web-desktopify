@@ -6,6 +6,29 @@ import (
 	"testing"
 )
 
+// TestFindUp：从 start 向上查找包含 name 的目录；找不到返回空串。
+func TestFindUp(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "pnpm-workspace.yaml"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inner := filepath.Join(root, "apps", "dsh-custom")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := FindUp(inner, "pnpm-workspace.yaml"); got != root {
+		t.Fatalf("应向上解析到 %q，得到 %q", root, got)
+	}
+	// 自身命中。
+	if got := FindUp(root, "pnpm-workspace.yaml"); got != root {
+		t.Fatalf("自身命中应返回自身，得到 %q", got)
+	}
+	// 找不到：空串。
+	if got := FindUp(t.TempDir(), "no-such-file"); got != "" {
+		t.Fatalf("找不到应返回空串，得到 %q", got)
+	}
+}
+
 // TestCopyDirDerefSkipsSelf：复制到源内部的目标时，目标自身的子树必须被
 // 跳过（避免递归自复制），不依赖任何目录名约定。
 func TestCopyDirDerefSkipsSelf(t *testing.T) {

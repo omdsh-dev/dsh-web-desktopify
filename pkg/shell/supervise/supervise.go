@@ -100,11 +100,14 @@ func Run(ctx context.Context, exeDir, profile, port, dshHome string, win *applic
 	}
 }
 
+// portProvider 是 viewURL 对网关的最小依赖（网关监听端口）。
+type portProvider interface{ Port() int }
+
 // viewURL 返回窗口加载地址：网关根路径 + 后端 ready URL 的完整 query
 // 透传（认证 token 等全部参数）。WebView 首次加载带 query，经网关反代
 // （Host/Origin 改写为后端）触发 dsh 认证，Set-Cookie 落库后后续请求走
 // cookie。
-func viewURL(gw *gateway.Gateway, backendURL string) string {
+func viewURL(gw portProvider, backendURL string) string {
 	view := "http://127.0.0.1:" + strconv.Itoa(gw.Port()) + "/"
 	if u, err := url.Parse(backendURL); err == nil && u.RawQuery != "" {
 		view += "?" + u.RawQuery

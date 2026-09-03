@@ -10,11 +10,11 @@ import (
 	"runtime/debug"
 	"strings"
 
+	"github.com/omdsh-dev/dsh-web-desktopify/internal/build"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/bundle"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/config"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/fsutil"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/profile"
-	"github.com/omdsh-dev/dsh-web-desktopify/internal/sea"
 )
 
 const usage = `dsh-web-desktopify — 把 dsh 的 --profile web 与 cordis.patch.yml 打包为独立自定义桌面。
@@ -48,7 +48,7 @@ settings.yaml 等用户运行时数据不属于工作区：打包应用按 dshHo
 .dsh-store（会话数据跨启动保留，不污染全局数据目录），profiles/web
 由 dsh 原生管理（工作区依赖以 link: 形式装入 profile）。
 
-全部产物在 node_modules/.dsh-web-desktopify/ 下（cache/<step>/<digest>/，
+全部产物在 node_modules/.dsh-web-desktopify/ 下（cache/<digest>/，
 node_modules 已被 git 忽略）。
 `
 
@@ -57,7 +57,6 @@ func Run(args []string) int {
 	skipInstall := false
 	force := false
 	install := false
-	emptyHome := false
 	platform := ""
 	workspace := ""
 	profileName := ""
@@ -65,8 +64,6 @@ func Run(args []string) int {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
-		case a == "--empty-home":
-			emptyHome = true
 		case a == "--skip-install":
 			skipInstall = true
 		case a == "--force":
@@ -118,7 +115,7 @@ func Run(args []string) int {
 		if len(rest) >= 2 {
 			ws = rest[1]
 		}
-		if err := Dev(ws, skipInstall, emptyHome); err != nil {
+		if err := Dev(ws, skipInstall); err != nil {
 			fmt.Fprintf(os.Stderr, "dev 失败：%v\n", err)
 			return 1
 		}
@@ -163,6 +160,7 @@ func Run(args []string) int {
 }
 
 // checkPlatform 校验 bundle 目标平台（SEA 与 Wails 壳均不支持交叉编译）。
+// 接受 os/arch 形式；macos 是 darwin 的别名（usage 示例写法）。
 func checkPlatform(platform string) error {
 	if platform == "" {
 		return nil
@@ -171,7 +169,11 @@ func checkPlatform(platform string) error {
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return fmt.Errorf("--platform 必须是 os/arch 形式（如 macos/arm64），得到 %q", platform)
 	}
-	if parts[0] != runtime.GOOS || parts[1] != runtime.GOARCH {
+	osName := parts[0]
+	if osName == "macos" {
+		osName = "darwin"
+	}
+	if osName != runtime.GOOS || parts[1] != runtime.GOARCH {
 		return fmt.Errorf("不支持交叉编译：SEA（node --build-sea）与 Wails 壳只能在本机平台构建（当前 %s/%s，目标 %s）", runtime.GOOS, runtime.GOARCH, platform)
 	}
 	return nil
@@ -181,10 +183,13 @@ func checkPlatform(platform string) error {
 // 路径。
 //
 // 产物按输入指纹内容寻址缓存（node_modules/.dsh-web-desktopify/cache/
-// <step>/<digest>/）：检查只关心目录在不在，不比对状态记录；依赖传导由
+// <digest>/）：检查只关心目录在不在，不比对状态记录；依赖传导由
 // digest 链保证——deploy 重建后其 digest 变化，SEA / 平台组装的 digest
 // 随之变化，必然重建。--force 全部重建（deploy 重新 pnpm deploy，不再
 // 复用旧依赖闭包）。
+//
+// 执行由 internal/build 并行调度：壳二进制与 deploy 闭包无产物依赖，
+// 可与 deploy 并行构建；SEA 等 deploy，平台组装等 SEA 与壳。
 func Bundle(ws, platform string, force, install, skipInstall bool) (string, error) {
 	if err := checkPlatform(platform); err != nil {
 		return "", err
@@ -196,15 +201,8 @@ func Bundle(ws, platform string, force, install, skipInstall bool) (string, erro
 
 	// 工作区内容白名单：package.json + files 字段（+ node_modules 指纹
 	// 单独纳入）。被白名单排除的内容（构建产物、缓存、锁文件等）不参与
-	// hash，也不进 DSH_HOME 种子（bundle 内部同规则，见 SeedAllow）。
-	allow := bundle.SeedAllow(cfg.Files)
-	hashIgnored := func(rel string, isDir bool) bool {
-		// node_modules 由 ClosureFingerprint 单独指纹，不参与 dir hash。
-		if rel == "node_modules" || strings.HasPrefix(rel, "node_modules/") {
-			return true
-		}
-		return !allow(rel, isDir)
-	}
+	// hash，也不进 DSH_HOME 种子（bundle 内部同规则，见 SeedIgnored）。
+	hashIgnored := bundle.SeedIgnored(cfg.Files)
 
 	// CLI/壳源码指纹：代码变更后旧产物不再复用（见 toolFingerprint）。
 	tool := toolFingerprint(root)
@@ -225,75 +223,17 @@ func Bundle(ws, platform string, force, install, skipInstall bool) (string, erro
 		fp = parts[1]
 	}
 	if fp == "" {
-		fmt.Printf("==> 工作区指纹: %s（闭包未安装，无指纹）\n", shortHash(wsHash))
+		fmt.Printf("==> 工作区指纹: %s（闭包未安装，无指纹）\n", build.ShortHash(wsHash))
 	} else {
-		fmt.Printf("==> 工作区指纹: %s（闭包指纹 %s）\n", shortHash(wsHash), shortHash(fp))
+		fmt.Printf("==> 工作区指纹: %s（闭包指纹 %s）\n", build.ShortHash(wsHash), build.ShortHash(fp))
 	}
 
-	// ---- 分步 DAG（内容寻址缓存）----
-	// 1) deploy 闭包。输入 = 工作区指纹。缓存 = cache/deploy/<digest>/，
-	//    命中即目录存在；重建时重新 pnpm deploy（新版本依赖进闭包）。
-	deployStep := &buildStep{
-		id:    "deploy",
-		label: "deploy 闭包",
-		input: func() (string, error) { return wsHash, nil },
-		run: func(dst string) error {
-			if skipInstall {
-				return fmt.Errorf("deploy 缓存缺失（--skip-install 下不自动 deploy；先跑一次不带 --skip-install 的 bundle 或 pnpm deploy --filter=%s --prod）", cfg.Name)
-			}
-			return sea.DeployClosure(ws, cfg, dst)
-		},
+	// 分步 DAG（内容寻址缓存，internal/build 并行调度）。
+	outputs, err := bundleGraph(ws, cfg, wsHash, tool, platformName(), skipInstall).Run(force)
+	if err != nil {
+		return "", err
 	}
-
-	// 2) SEA 后端。输入 = 工具链指纹 + deploy digest。deploy 重建后 digest
-	//    变化，自动重跑；依赖未变时复用 cache/sea/<digest>/。
-	seaStep := &buildStep{
-		id:    "sea",
-		label: "SEA 后端",
-		deps:  []*buildStep{deployStep},
-		input: func() (string, error) { return tool, nil },
-		run: func(dst string) error {
-			return sea.Build(ws, cfg, deployStep.cachePath(ws), dst)
-		},
-	}
-
-	// 3) 壳二进制。输入 = 工具链指纹；依赖仅用于 digest 传导。
-	shellStep := &buildStep{
-		id:    "shell",
-		label: "壳二进制",
-		deps:  []*buildStep{seaStep},
-		input: func() (string, error) { return tool, nil },
-		run: func(dst string) error {
-			return buildShell(ws, cfg, dst)
-		},
-	}
-
-	// 4) 平台组装。输入 = 平台 + 种子指纹 + SEA digest + 壳 digest。
-	assembleStep := &buildStep{
-		id:    "assemble",
-		label: "平台组装",
-		deps:  []*buildStep{seaStep, shellStep},
-		input: func() (string, error) { return platformName() + ":" + wsHash, nil },
-		run: func(dst string) error {
-			return bundle.Assemble(bundle.Inputs{
-				Workspace: ws,
-				Cfg:       cfg,
-				SeaDir:    seaStep.cachePath(ws),
-				ShellBin:  filepath.Join(shellStep.cachePath(ws), binName()),
-				SeedHash:  wsHash,
-			}, dst)
-		},
-	}
-
-	// 按依赖序执行（deploy → sea → shell → assemble）。
-	steps := []*buildStep{deployStep, seaStep, shellStep, assembleStep}
-	for _, s := range steps {
-		if _, _, err := runStep(ws, s, force); err != nil {
-			return "", err
-		}
-	}
-
-	appRoot := assembleStep.cachePath(ws)
+	appRoot := outputs["assemble"].Dir()
 	fmt.Printf("==> 产物: %s\n", appRoot)
 
 	// 安装（可选）。
@@ -373,20 +313,12 @@ func platformName() string {
 	return runtime.GOOS + "/" + runtime.GOARCH
 }
 
-// shortHash 截断 hash 为 12 位，便于日志对比（不足 12 位原样返回）。
-func shortHash(h string) string {
-	if len(h) <= 12 {
-		return h
-	}
-	return h[:12]
-}
-
 // Dev 基于工作区直接起一个 dsh web 并打开浏览器页面（不组装桌面应用）。
 // DSH_HOME 为工作区本地目录 .dsh-store，profiles/web 由 dsh 原生管理
 // （initProfile + plugin add link: 工作区依赖）；目录还不是工作区时从模板
 // 兜底创建工程文件并安装依赖。**不清理 .dsh-store**：dev 会话数据跨启动
 // 保留。
-func Dev(ws string, skipInstall, _ bool) error {
+func Dev(ws string, skipInstall bool) error {
 	_, ws, err := resolveWorkspace(ws)
 	if err != nil {
 		return err

@@ -10,7 +10,9 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/omdsh-dev/dsh-web-desktopify/internal/build"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/config"
+	"github.com/omdsh-dev/dsh-web-desktopify/internal/fsutil"
 	"github.com/omdsh-dev/dsh-web-desktopify/pkg/shell"
 )
 
@@ -28,10 +30,11 @@ func buildShell(ws string, cfg *config.Config, dst string) error {
 	}
 	out := filepath.Join(dst, binName)
 	fmt.Printf("==> 解出内嵌壳源码\n")
-	srcDir, err := materializeShellSrc(ws, cfg)
+	srcDir, cleanup, err := materializeShellSrc(ws, cfg)
 	if err != nil {
 		return err
 	}
+	defer cleanup() // 构建中间产物不留盘（build/ 下只留状态记录与暂存）
 	// 用完整 import 路径构建：外层模块经 replace 把仓库路径解析到内层
 	// 子模块 pkg/shell/，cmd 包即 github.com/omdsh-dev/dsh-web-desktopify/pkg/shell/cmd。
 	cmd := exec.Command("go", "build", "-o", out, "github.com/omdsh-dev/dsh-web-desktopify/pkg/shell/cmd")
@@ -40,7 +43,7 @@ func buildShell(ws string, cfg *config.Config, dst string) error {
 	cmd.Stderr = os.Stderr
 	// -mod=mod 自动补全 go.sum（go.mod 动态生成）；GOWORK=off 让壳模块
 	// 脱离仓库 go.work 单独解析。
-	cmd.Env = setEnv(os.Environ(),
+	cmd.Env = fsutil.WithEnv(os.Environ(),
 		"GOFLAGS", os.Getenv("GOFLAGS")+" -mod=mod",
 		"GOWORK", "off",
 	)
@@ -51,59 +54,37 @@ func buildShell(ws string, cfg *config.Config, dst string) error {
 	return nil
 }
 
-// setEnv 返回在 env 基础上覆盖指定 key/value 的新环境切片（去掉重复 key）。
-func setEnv(env []string, kvs ...string) []string {
-	out := make([]string, 0, len(env)+len(kvs))
-	for _, kv := range env {
-		if i := strings.IndexByte(kv, '='); i > 0 {
-			dup := false
-			for k := 0; k < len(kvs); k += 2 {
-				if kv[:i] == kvs[k] {
-					dup = true
-					break
-				}
-			}
-			if dup {
-				continue
-			}
-		}
-		out = append(out, kv)
-	}
-	for k := 0; k < len(kvs); k += 2 {
-		out = append(out, kvs[k]+"="+kvs[k+1])
-	}
-	return out
-}
-
 // materializeShellSrc 把内嵌的壳构建输入（shell.FS）解出为临时模块根
 // （node_modules/.dsh-web-desktopify/build/shell-src/）并动态写入 go.mod，
-// 返回该根目录。每次全量重写，保证与二进制内嵌内容一致。
+// 返回该根目录。每次全量重写，保证与二进制内嵌内容一致。调用方完成
+// go build 后应调用 cleanup 删除解出目录（构建中间产物不留盘）。
 //
 // 模块布局：外层 module dsh-shell，内层子模块 pkg/shell/ 声明
 // module github.com/omdsh-dev/dsh-web-desktopify，外层经 replace 指回——
 // 壳源码的 import 解析为本地子目录，且绑定 FQN（PkgPath.TypeName.Method）
 // 稳定为 github.com/omdsh-dev/dsh-web-desktopify/pkg/shell/...。
-func materializeShellSrc(ws string, cfg *config.Config) (string, error) {
-	srcDir := filepath.Join(buildDir(ws), "shell-src")
-	if err := os.RemoveAll(srcDir); err != nil {
-		return "", err
+func materializeShellSrc(ws string, cfg *config.Config) (srcDir string, cleanup func(), err error) {
+	srcDir = filepath.Join(build.BuildDir(ws), "shell-src")
+	cleanup = func() { _ = os.RemoveAll(srcDir) }
+	if err = os.RemoveAll(srcDir); err != nil {
+		return "", nil, err
 	}
 	// 布局：外层模块根 srcDir/（go.mod: module dsh-shell），内层子模块根
 	// srcDir/pkg/shell/（go.mod: module github.com/omdsh-dev/dsh-web-desktopify），
 	// shell.FS 内容解出到 srcDir/pkg/shell/pkg/shell/——包路径保持
 	// github.com/omdsh-dev/dsh-web-desktopify/pkg/shell/...，与绑定 FQN 一致。
 	inner := filepath.Join(srcDir, "pkg", "shell", "pkg", "shell")
-	if err := writeEmbedDir(shell.FS, ".", inner); err != nil {
-		return "", fmt.Errorf("解出壳源码: %w", err)
+	if err = writeEmbedDir(shell.FS, ".", inner); err != nil {
+		return "", nil, fmt.Errorf("解出壳源码: %w", err)
 	}
 	innerRoot := filepath.Join(srcDir, "pkg", "shell")
-	if err := os.WriteFile(filepath.Join(innerRoot, "go.mod"), []byte(shellInnerGoMod()), 0o644); err != nil {
-		return "", fmt.Errorf("写壳内层 go.mod: %w", err)
+	if err = os.WriteFile(filepath.Join(innerRoot, "go.mod"), []byte(shellInnerGoMod()), 0o644); err != nil {
+		return "", nil, fmt.Errorf("写壳内层 go.mod: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(srcDir, "go.mod"), []byte(shellGoMod()), 0o644); err != nil {
-		return "", fmt.Errorf("写壳 go.mod: %w", err)
+	if err = os.WriteFile(filepath.Join(srcDir, "go.mod"), []byte(shellGoMod()), 0o644); err != nil {
+		return "", nil, fmt.Errorf("写壳 go.mod: %w", err)
 	}
-	return srcDir, nil
+	return srcDir, cleanup, nil
 }
 
 // shellGoMod 返回壳外层模块的 go.mod：module dsh-shell，仓库路径经 replace

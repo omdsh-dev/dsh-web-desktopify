@@ -22,8 +22,8 @@ import (
 const readyPrefix = "dsh web: "
 
 // urlTimeout 是 URL 就绪等待上限；stopGrace 是优雅终止后等待退出的宽限期
-// （到期未退出则强杀兜底）。
-const (
+// （到期未退出则强杀兜底）。包级变量以便测试缩短（生产值不变）。
+var (
 	urlTimeout = 30 * time.Second
 	stopGrace  = 5 * time.Second
 )

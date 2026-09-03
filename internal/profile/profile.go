@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/config"
+	"github.com/omdsh-dev/dsh-web-desktopify/internal/fsutil"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/pm"
 )
 
@@ -25,20 +26,7 @@ var templates embed.FS
 // DshClosureDir 向上查找第一个 node_modules 里有 dsh 主包的目录（工作区
 // 自身或祖先；monorepo 内嵌工作区时 hoisted 到根）。找不到返回空串。
 func DshClosureDir(ws string) string {
-	dir, err := filepath.Abs(ws)
-	if err != nil {
-		dir = ws
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "node_modules", "@deepseek-ai", "dsh", "package.json")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return ""
-		}
-		dir = parent
-	}
+	return fsutil.FindUp(ws, filepath.Join("node_modules", "@deepseek-ai", "dsh", "package.json"))
 }
 
 // Installed 报告闭包是否已安装：工作区或向上最近的 workspace 根的

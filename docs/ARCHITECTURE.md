@@ -10,15 +10,15 @@
 .
 ├── cmd/dsh-web-desktopify/       # CLI 入口（go.mod tool 指令注册）
 ├── internal/
-│   ├── cli/                      # 命令编排：dev / bundle / plugin add + 构建 DAG
+│   ├── cli/                      # 命令编排：dev / bundle / plugin add + 打包 DAG 装配
+│   ├── build/                    # 内容寻址构建 DAG 执行器（Step 接口 + 并行调度）
 │   ├── config/                   # 工作区配置解析（package.json 的 dsh.* 字段）
 │   ├── profile/                  # 工作区工程文件兜底 + 依赖闭包安装
 │   ├── sea/                      # SEA 打包（deploy 闭包 → dsh-bridge → tsdown）
 │   ├── bundle/                   # 平台组装（macOS / Linux / Windows）+ 安装
 │   ├── tools/                    # 构建工具链（tsdown）按需安装
-│   ├── fsutil/                   # 目录复制 / 解引用 / hash
-│   ├── pm/                       # pnpm 定位与命令构造
-│   └── gitignore/                # .gitignore 解析
+│   ├── fsutil/                   # 目录复制 / 解引用 / hash / 向上查找 / 环境工具
+│   └── pm/                       # pnpm 定位与命令构造
 ├── pkg/shell/                    # 壳源码（Wails v3），go:embed 内嵌进 CLI
 ├── examples/                     # 工作区示例（official / custom）
 ├── docs/                         # 本目录：架构与约定
@@ -50,11 +50,23 @@
 
 ## 核心设计
 
-- **内容寻址构建 DAG**（`internal/cli/buildplan.go`）：deploy 闭包 → SEA
-  后端 → 壳二进制 → 平台组装，每步产物按输入指纹存放于
-  `node_modules/.dsh-web-desktopify/cache/<step>/<digest>/`，命中检查只关心
-  目录在不在；依赖传导由 digest 链保证——deploy 重建后其 digest 变化，
-  下游 digest 随之变化，必然重建。`--force` 全部重建。
+- **内容寻址构建 DAG**（`internal/build` + `internal/cli/buildplan.go`）：
+  deploy 闭包 → SEA 后端 → 壳二进制 → 平台组装。每步实现 `build.Step`
+  接口：`Deps()`（指纹依赖，digest 传导）与 `Needs()`（产物依赖，执行
+  顺序）分离，产物依赖就绪即并行执行——壳二进制与 deploy 闭包无产物
+  依赖，可与 deploy 并行构建。每步产物按输入指纹存放于
+  `node_modules/.dsh-web-desktopify/cache/<step>/<digest>/`，命中检查只
+  关心目录在不在；依赖传导由 digest 链保证——deploy 重建后其 digest
+  变化，下游 digest 随之变化，必然重建。`--force` 全部重建。
+- **构建状态记录**：每次 bundle 在 `build/` 下写一份
+  `build-<ts>.json`（各步 digest / 复用 / 产物路径，保留最近 10 份），
+  便于回溯与清理；工具链目录带 `tools/state.json`（安装时间 + 工具
+  版本）。`build/` 下只留状态记录与用完即删的暂存目录——壳源码解出
+  （shell-src）构建完成即清理，不留中间产物。
+- **类型化产物契约**：步间传递的不是目录路径而是类型化产物
+  （`sea.Closure` / `sea.Output` / `shellOutput` / `bundle.Output`），
+  SEA 布局（bin/dsh、config/、node_modules/）不再由 bundle 按路径约定
+  隐式读取——布局变更在编译期暴露。
 - **SEA 薄入口 + 外置闭包**（`internal/sea`）：blob 内只留 node: builtin
   导入的 `sea-entry.mjs`，dsh CLI 与全部依赖经闭包内 CJS 桥 `dsh-bridge`
   从可执行文件旁的 node_modules 走正常 Node ESM loader 解析——依赖闭包、
@@ -66,6 +78,12 @@
 - **壳源码内嵌**（`pkg/shell/embed.go`）：壳构建输入以 go:embed 内嵌在 CLI
   二进制，运行时解出为独立模块根再 `go build`——CLI 不依赖仓库 checkout，
   `go install` 后也能 bundle。
+- **工作区白名单**（`internal/bundle`）：DSH_HOME 种子与工作区 hash 共用
+  同一份白名单判定（`SeedAllow` / `SeedIgnored`）——package.json + files
+  字段 + cordis.patch.yml 进种子与 hash，node_modules 单独指纹
+  （`profile.ClosureFingerprint`），其余工作区内容（构建产物、缓存、
+  `.dsh-store`、锁文件）一律排除。种子复制与 hash 的忽略语义一致，避免
+  两处判定漂移。
 
 ## 装配（bundle 流程）
 
@@ -105,7 +123,19 @@ PNG 源直接解码，各平台尺寸由 `golang.org/x/image/draw` 缩放；macO
 - 透传给后端：`DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL`（LLM 凭据，Unix
   上启动前按 `$SHELL` source 用户 shell 配置继承）
 
+## 测试
+
+- 单元测试位于各包 `*_test.go`，`go test ./...` 全量运行（CI 与本地
+  `just test`）。不依赖外部服务；需要真实 pnpm / node 的路径（如 SEA
+  打包、壳构建）由 `internal/cli/shell_e2e_test.go` 显式标记，本地无工具
+  链时跳过。
+- 行为契约测试：网关接线（`pkg/shell/gateway/wire_test.go`）、appconfig
+  打包/读取契约（`internal/bundle` 与 `pkg/shell/appconfig` 双侧）、
+  构建 DAG 缓存语义（`internal/cli/buildplan_test.go`）。
+- 并发安全：`sharedstore` 的并发写测试配合 `go test -race` 运行。
+
 ## 深入阅读
 
 - 工作区结构与「先验证，再打包」：[docs/workspace.md](workspace.md)
 - 项目约定：[docs/CODING_GUIDELINE.md](CODING_GUIDELINE.md)
+- 关键决策记录：[docs/adr/](adr/)

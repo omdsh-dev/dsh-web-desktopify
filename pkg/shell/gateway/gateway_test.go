@@ -172,7 +172,7 @@ func TestGatewaySetTarget(t *testing.T) {
 func TestGatewayRandomPort(t *testing.T) {
 	// 两次启动实例端口不同：网关监听端口是 OS 随机分配，非固定。
 	ports := make(map[int]bool)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		gw, err := Start("127.0.0.1:1", context.Background())
 		if err != nil {
 			t.Fatalf("start %d: %v", i, err)

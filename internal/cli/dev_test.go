@@ -76,12 +76,7 @@ func TestWorkspaceHashIgnoresDevStore(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ignored := func(rel string, isDir bool) bool {
-		if rel == "node_modules" || strings.HasPrefix(rel, "node_modules/") {
-			return true
-		}
-		return !bundle.SeedAllow(nil)(rel, isDir)
-	}
+	ignored := bundle.SeedIgnored(nil)
 	h1, err := workspaceHash(ws, hashSkip, ignored)
 	if err != nil {
 		t.Fatal(err)

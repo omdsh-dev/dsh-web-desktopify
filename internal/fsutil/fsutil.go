@@ -2,15 +2,14 @@
 package fsutil
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/mod/sumdb/dirhash"
 )
 
 // CopyFile 复制单个文件并保留可执行位。
@@ -207,11 +206,11 @@ func RemoveAll(path string) error {
 }
 
 // DirHash 计算目录内容的稳定哈希：按相对路径排序后对每个文件
-// sha256(相对路径 + 文件内容) 聚合。skip 里的名字（文件或目录，任意层级）
+// sha256(相对路径 + 文件内容) 聚合（golang.org/x/mod/sumdb/dirhash 的
+// Hash1 算法，与 Go 模块缓存同源）。skip 里的名字（文件或目录，任意层级）
 // 排除；ignored 非 nil 时，相对路径（/ 分隔）被其判为忽略的条目也排除
-// （用于遵循 .gitignore）。用于构建缓存判断（输入无变化则跳过重新打包）。
+// （用于遵循白名单）。用于构建缓存判断（输入无变化则跳过重新打包）。
 func DirHash(root string, skip map[string]bool, ignored func(rel string, isDir bool) bool) (string, error) {
-	h := sha256.New()
 	var paths []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -237,19 +236,66 @@ func DirHash(root string, skip map[string]bool, ignored func(rel string, isDir b
 	if err != nil {
 		return "", err
 	}
-	sort.Strings(paths)
-	for _, rel := range paths {
-		f, err := os.Open(filepath.Join(root, rel))
-		if err != nil {
-			return "", err
-		}
-		io.WriteString(h, rel)
-		h.Write([]byte{0})
-		if _, err := io.Copy(h, f); err != nil {
-			f.Close()
-			return "", err
-		}
-		f.Close()
+	return dirhash.Hash1(paths, func(p string) (io.ReadCloser, error) {
+		return os.Open(filepath.Join(root, p))
+	})
+}
+
+// FindUp 从 start 起逐级向上查找第一个包含 name 条目的目录（name 为
+// 目录或文件均可），返回该目录。找不到时返回空串。用于解析 monorepo
+// 内嵌工作区：pnpm-workspace.yaml / node_modules 等可能 hoisted 到祖先。
+func FindUp(start, name string) string {
+	dir, err := filepath.Abs(start)
+	if err != nil {
+		dir = start
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	for {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// WithEnv 返回 env 的副本，其中各 key 的值替换为对应 value（先移除旧
+// 条目再追加到末尾）。kvs 按 key, value 成对给出。
+func WithEnv(env []string, kvs ...string) []string {
+	out := make([]string, 0, len(env)+len(kvs)/2)
+	for _, e := range env {
+		if i := strings.IndexByte(e, '='); i > 0 {
+			dup := false
+			for k := 0; k < len(kvs); k += 2 {
+				if e[:i] == kvs[k] {
+					dup = true
+					break
+				}
+			}
+			if dup {
+				continue
+			}
+		}
+		out = append(out, e)
+	}
+	for k := 0; k < len(kvs); k += 2 {
+		out = append(out, kvs[k]+"="+kvs[k+1])
+	}
+	return out
+}
+
+// PrependPath 返回 env 的副本，把 dir 放到 PATH 最前（去掉重复条目）。
+func PrependPath(env []string, dir string) []string {
+	old := ""
+	out := make([]string, 0, len(env)+1)
+	for _, e := range env {
+		if after, ok := strings.CutPrefix(e, "PATH="); ok {
+			old = after
+			continue
+		}
+		out = append(out, e)
+	}
+	return append(out, "PATH="+dir+string(os.PathListSeparator)+old)
 }

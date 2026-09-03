@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/config"
+	"github.com/omdsh-dev/dsh-web-desktopify/internal/fsutil"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/pm"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/profile"
 )
@@ -49,10 +50,10 @@ func PluginAdd(ws string, pkgs []string, skipInstall bool) error {
 	fmt.Printf("==> plugin add %s（工作区 %s）\n", strings.Join(pkgs, " "), ws)
 	args := append([]string{"plugin", "--profile", config.ProfileName, "add"}, pkgs...)
 	cmd := exec.Command(dshBin, args...)
-	cmd.Env = withEnv(os.Environ(), "DSH_HOME", homeDir)
+	cmd.Env = fsutil.WithEnv(os.Environ(), "DSH_HOME", homeDir)
 	// dsh 内部用 PATH 上的 pnpm 跑 add：优先放入真实 pnpm，避免命中 nub shim。
 	if bin, err := pm.Bin(); err == nil {
-		cmd.Env = prependPath(cmd.Env, filepath.Dir(bin))
+		cmd.Env = fsutil.PrependPath(cmd.Env, filepath.Dir(bin))
 	}
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -68,30 +69,4 @@ func PluginAdd(ws string, pkgs []string, skipInstall bool) error {
 		fmt.Printf("==> bundles: [%s]\n", strings.Join(cfg.Bundles, ", "))
 	}
 	return nil
-}
-
-// withEnv 返回 env 的副本，其中 key 的值替换为 value（先移除旧条目再追加）。
-func withEnv(env []string, key, value string) []string {
-	out := make([]string, 0, len(env)+1)
-	prefix := key + "="
-	for _, e := range env {
-		if !strings.HasPrefix(e, prefix) {
-			out = append(out, e)
-		}
-	}
-	return append(out, prefix+value)
-}
-
-// prependPath 返回 env 的副本，把 dir 放到 PATH 最前。
-func prependPath(env []string, dir string) []string {
-	old := ""
-	out := make([]string, 0, len(env)+1)
-	for _, e := range env {
-		if after, ok := strings.CutPrefix(e, "PATH="); ok {
-			old = after
-			continue
-		}
-		out = append(out, e)
-	}
-	return append(out, "PATH="+dir+string(os.PathListSeparator)+old)
 }

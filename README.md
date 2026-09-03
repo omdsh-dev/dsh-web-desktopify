@@ -55,3 +55,14 @@ dsh 验证（见 [docs/workspace.md](docs/workspace.md)）。
 - [docs/workspace.md](docs/workspace.md) — 工作区结构与「先验证，再打包」流程
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 产物、架构与构建原理
 - [docs/CODING_GUIDELINE.md](docs/CODING_GUIDELINE.md) — 项目约定
+- [docs/adr/](docs/adr/) — 关键决策记录（ADR）
+
+## 开发
+
+```sh
+just test        # go test ./...（并发代码用 go test -race 验证）
+just install     # go install ./cmd/dsh-web-desktopify
+just dep         # go mod tidy
+just custom::dev     # examples/custom 起 dsh web（go tool dsh-web-desktopify dev）
+just custom::bundle  # examples/custom 打包（go tool dsh-web-desktopify bundle）
+```

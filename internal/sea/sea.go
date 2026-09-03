@@ -18,15 +18,38 @@ import (
 //go:embed all:templates
 var templates embed.FS
 
-// skipEntries 是复制闭包时跳过的 node_modules 簿记条目。
-var skipEntries = map[string]bool{
-	".store":        true,
-	".nub":          true,
-	".modules.yaml": true,
-}
-
 // bridgeName 是闭包内 CJS 桥的包名。
 const bridgeName = "dsh-bridge"
+
+// Closure 是 deploy 闭包产物（pnpm deploy --prod 导出的自包含生产闭包）。
+type Closure struct{ dir string }
+
+// NewClosure 构造闭包产物。
+func NewClosure(dir string) Closure { return Closure{dir: dir} }
+
+// Dir 返回闭包根目录（node_modules 位于其下）。
+func (c Closure) Dir() string { return c.dir }
+
+// NodeModules 返回闭包的 node_modules 目录。
+func (c Closure) NodeModules() string { return filepath.Join(c.dir, "node_modules") }
+
+// Output 是 SEA 打包产物（bin/dsh 可执行 + 运行时资源）。
+type Output struct{ dir string }
+
+// NewOutput 构造 SEA 产物。
+func NewOutput(dir string) Output { return Output{dir: dir} }
+
+// Dir 返回 SEA 产物根目录。
+func (o Output) Dir() string { return o.dir }
+
+// Bin 返回 SEA 可执行文件路径（平台相关扩展名）。
+func (o Output) Bin() string {
+	name := "dsh"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.Join(o.dir, "bin", name)
+}
 
 // bridgePkgJSON / bridgeIndex 是 dsh-bridge 桥的内容：CJS 模块经
 // createRequire 从文件系统加载后，其动态 import() 走正常 Node ESM
@@ -67,9 +90,9 @@ func writeBridge(nmDir string) error {
 }
 
 // Build 执行一次完整的 SEA 打包，把产物写进 dst 目录（调用方提供的
-// 暂存目录，完成后由调用方发布进缓存）。deployDir 是 deploy 闭包所在
-// 目录（CLI 分步 DAG 的 deploy 步负责生成/复用），此处直接复用。
-func Build(ws string, cfg *config.Config, deployDir, dst string) error {
+// 暂存目录，完成后由调用方发布进缓存）。closure 是 deploy 闭包产物
+// （CLI 构建 DAG 的 deploy 步负责生成/复用），此处直接复用。
+func Build(ws string, cfg *config.Config, closure Closure, dst string) error {
 	if _, err := tools.Ensure(ws); err != nil {
 		return err
 	}
@@ -83,10 +106,9 @@ func Build(ws string, cfg *config.Config, deployDir, dst string) error {
 	// 1) 闭包：deployDir/node_modules（pnpm deploy --prod 生成的自包含
 	// 生产闭包）。保留链接（deploy 闭包的相对链接指向自身 .pnpm，自包含
 	// 无逃逸）。
-	deployRoot := deployDir
-	deployNM := filepath.Join(deployRoot, "node_modules")
+	deployNM := closure.NodeModules()
 	if _, err := os.Stat(deployNM); err != nil {
-		return fmt.Errorf("deploy 闭包缺失 %s（先跑 pnpm deploy --filter=%s --prod %s）: %w", deployNM, cfg.Name, deployRoot, err)
+		return fmt.Errorf("deploy 闭包缺失 %s（先跑 pnpm deploy --filter=%s --prod %s）: %w", deployNM, cfg.Name, closure.Dir(), err)
 	}
 	fmt.Printf("==> 复用 deploy 闭包: %s\n", deployNM)
 	nmDst := filepath.Join(staging, "node_modules")
@@ -151,11 +173,7 @@ func Build(ws string, cfg *config.Config, deployDir, dst string) error {
 		return err
 	}
 
-	exe := filepath.Join(staging, "bin", "dsh")
-	if runtime.GOOS == "windows" {
-		exe += ".exe"
-	}
-	if _, err := os.Stat(exe); err != nil {
+	if _, err := os.Stat(NewOutput(staging).Bin()); err != nil {
 		return fmt.Errorf("SEA 产物缺失: %w", err)
 	}
 	return nil

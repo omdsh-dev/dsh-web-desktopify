@@ -48,6 +48,9 @@ func renderSVG1024(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("解析 SVG: %w", err)
 	}
 	vb := icon.ViewBox
+	if vb.W <= 0 || vb.H <= 0 {
+		return nil, fmt.Errorf("SVG 缺少有效 viewBox（%gx%g），无法确定渲染尺寸", vb.W, vb.H)
+	}
 	scale := math.Min(float64(iconSize)/vb.W, float64(iconSize)/vb.H)
 	w, h := vb.W*scale, vb.H*scale
 	icon.SetTarget((float64(iconSize)-w)/2, (float64(iconSize)-h)/2, w, h)

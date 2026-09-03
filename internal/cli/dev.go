@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/config"
+	"github.com/omdsh-dev/dsh-web-desktopify/internal/fsutil"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/pm"
 )
 
@@ -25,21 +26,10 @@ func devHome(ws string) string {
 // dshBin 返回工作区闭包里的 dsh 可执行：向上找第一个 node_modules/.bin
 // 里有 dsh 的目录。找不到返回工作区路径（报错信息用）。
 func dshBin(ws string) string {
-	dir, err := filepath.Abs(ws)
-	if err != nil {
-		dir = ws
+	if dir := fsutil.FindUp(ws, filepath.Join("node_modules", ".bin", "dsh")); dir != "" {
+		return filepath.Join(dir, "node_modules", ".bin", "dsh")
 	}
-	for {
-		bin := filepath.Join(dir, "node_modules", ".bin", "dsh")
-		if _, err := os.Stat(bin); err == nil {
-			return bin
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return filepath.Join(ws, "node_modules", ".bin", "dsh")
-		}
-		dir = parent
-	}
+	return filepath.Join(ws, "node_modules", ".bin", "dsh")
 }
 
 // ensureDevHome 构造 dev 运行时 DSH_HOME 布局：profiles/web 是 dsh 原生
@@ -90,10 +80,10 @@ func ensureDevProfile(ws, homeDir string) (string, error) {
 	}
 	args := append([]string{"plugin", "--profile", config.ProfileName, "add"}, specs...)
 	cmd := exec.Command(bin, args...)
-	cmd.Env = withEnv(os.Environ(), "DSH_HOME", homeDir)
+	cmd.Env = fsutil.WithEnv(os.Environ(), "DSH_HOME", homeDir)
 	// dsh 内部用 PATH 上的 pnpm 跑 add：优先放入真实 pnpm，避免命中 nub shim。
 	if pnpmBin, err := pm.Bin(); err == nil {
-		cmd.Env = prependPath(cmd.Env, filepath.Dir(pnpmBin))
+		cmd.Env = fsutil.PrependPath(cmd.Env, filepath.Dir(pnpmBin))
 	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -108,25 +98,16 @@ func ensureDevProfile(ws, homeDir string) (string, error) {
 // 与 dev.ts 的 import.meta.resolve 语义一致）：先找工作区自身
 // node_modules，再向上找 workspace 根（monorepo 内嵌工作区时 hoisted）。
 func resolveLinkedPkg(ws, name string) (string, error) {
-	dir, err := filepath.Abs(ws)
+	dir := fsutil.FindUp(ws, filepath.Join("node_modules", filepath.FromSlash(name)))
+	if dir == "" {
+		return "", fmt.Errorf("工作区闭包未安装 %s（%s 及其祖先的 node_modules 均缺失）", name, ws)
+	}
+	pkg := filepath.Join(dir, "node_modules", filepath.FromSlash(name))
+	real, err := filepath.EvalSymlinks(pkg)
 	if err != nil {
-		dir = ws
+		return "", fmt.Errorf("解析 %s: %w", pkg, err)
 	}
-	for {
-		pkg := filepath.Join(dir, "node_modules", filepath.FromSlash(name))
-		if info, err := os.Stat(pkg); err == nil && info.IsDir() {
-			real, err := filepath.EvalSymlinks(pkg)
-			if err != nil {
-				return "", fmt.Errorf("解析 %s: %w", pkg, err)
-			}
-			return real, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", fmt.Errorf("工作区闭包未安装 %s（%s 及其祖先的 node_modules 均缺失）", name, ws)
-		}
-		dir = parent
-	}
+	return real, nil
 }
 
 // devProfileLinked 报告 profile 是否已把工作区全部依赖以 link: 形式装好。

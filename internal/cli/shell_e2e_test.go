@@ -3,14 +3,15 @@ package cli
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
+	"github.com/omdsh-dev/dsh-web-desktopify/internal/build"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/config"
 )
 
 // TestShellBuildE2E 验证 buildShell 能解出内嵌源码、动态生成 go.mod 并
-// go build 出壳二进制（产物写入调用方提供的暂存目录）。
+// go build 出壳二进制（产物写入调用方提供的暂存目录）。解出的源码是
+// 构建中间产物：构建完成后 shell-src 被清理，build/ 下不留中间目录。
 func TestShellBuildE2E(t *testing.T) {
 	ws := t.TempDir()
 	cfg := &config.Config{Name: "e2e-shell"}
@@ -22,30 +23,11 @@ func TestShellBuildE2E(t *testing.T) {
 	if _, err := os.Stat(out); err != nil {
 		t.Fatalf("壳二进制不存在: %v", err)
 	}
-	srcDir := filepath.Join(buildDir(ws), "shell-src")
-	gomod, err := os.ReadFile(filepath.Join(srcDir, "go.mod"))
-	if err != nil {
-		t.Fatalf("读 go.mod: %v", err)
+	// 解出目录是中间产物：构建完成后应被清理。
+	srcDir := filepath.Join(build.BuildDir(ws), "shell-src")
+	if _, err := os.Stat(srcDir); !os.IsNotExist(err) {
+		t.Fatalf("shell-src 应被清理（中间产物不留盘）: %v", err)
 	}
-	// 外层模块：独立标识 + replace 指回内层子模块。
-	if !strings.HasPrefix(string(gomod), "module dsh-shell") {
-		t.Fatalf("外层 go.mod 模块名错误: %s", gomod)
-	}
-	if !strings.Contains(string(gomod), "replace github.com/omdsh-dev/dsh-web-desktopify => ./pkg/shell") {
-		t.Fatalf("外层 go.mod 应含 replace: %s", gomod)
-	}
-	// 内层子模块：module 名即仓库路径，绑定 FQN 稳定。
-	innerGomod, err := os.ReadFile(filepath.Join(srcDir, "pkg", "shell", "go.mod"))
-	if err != nil {
-		t.Fatalf("读内层 go.mod: %v", err)
-	}
-	if !strings.HasPrefix(string(innerGomod), "module github.com/omdsh-dev/dsh-web-desktopify") {
-		t.Fatalf("内层 go.mod 模块名错误: %s", innerGomod)
-	}
-	if !strings.Contains(string(innerGomod), "wailsapp/wails/v3") {
-		t.Fatalf("内层 go.mod 应含 wails 依赖")
-	}
-	if !dirExists(filepath.Join(srcDir, "pkg", "shell", "pkg", "shell", "cmd")) {
-		t.Fatal("解出的源码应有 cmd/ 目录")
-	}
+	// 解出内容本身由 materializeShellSrc 单测覆盖（go.mod 布局与
+	// 绑定 FQN 稳定），此处验证清理语义。
 }

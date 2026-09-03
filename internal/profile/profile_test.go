@@ -41,6 +41,54 @@ func makePkg(t *testing.T, nmDir, name, version string) {
 	}
 }
 
+// TestDshClosureDir：向上查找第一个 node_modules 里有 dsh 主包的目录；
+// monorepo 内嵌工作区时 hoisted 到根；找不到返回空串。
+func TestDshClosureDir(t *testing.T) {
+	root := t.TempDir()
+	nm := filepath.Join(root, "node_modules", "@deepseek-ai", "dsh")
+	if err := os.MkdirAll(nm, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nm, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inner := filepath.Join(root, "apps", "dsh-custom")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := DshClosureDir(inner); got != root {
+		t.Fatalf("应向上解析到 %q，得到 %q", root, got)
+	}
+	if got := DshClosureDir(root); got != root {
+		t.Fatalf("自身命中应返回自身，得到 %q", got)
+	}
+	if got := DshClosureDir(t.TempDir()); got != "" {
+		t.Fatalf("找不到应返回空串，得到 %q", got)
+	}
+}
+
+// TestInstalled：闭包已安装（含向上）为 true，否则 false。
+func TestInstalled(t *testing.T) {
+	root := t.TempDir()
+	nm := filepath.Join(root, "node_modules", "@deepseek-ai", "dsh")
+	if err := os.MkdirAll(nm, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nm, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inner := filepath.Join(root, "apps", "dsh-custom")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !Installed(inner) {
+		t.Fatal("内嵌工作区应视为已安装（hoisted 到根）")
+	}
+	if Installed(t.TempDir()) {
+		t.Fatal("无闭包应视为未安装")
+	}
+}
+
 func TestClosureFingerprint(t *testing.T) {
 	dir := t.TempDir()
 	nmDir := filepath.Join(dir, "node_modules")

@@ -36,13 +36,22 @@ just custom::bundle  # examples/custom 打包（go tool dsh-web-desktopify bundl
 - **注释不做设计说明**：设计意图写进 docs/ARCHITECTURE.md；代码注释只
   说明必要的事实（如可选资源目录的版本边界）。
 - **测试描述行为，不描述实现**：行为变更必须连同测试一起改。
+- **不引入假设性接缝**：接口只在有真实变化点（平台差异、外部工具、
+  契约两侧）时抽象；单一实现不包接口。测试需要替身时，用最小接口
+  （如 `supervise.viewURL` 的 `portProvider`），不为测试造抽象。
+- **重复实现收敛到工具包**：向上查找（`fsutil.FindUp`）、环境变量
+  构造（`fsutil.WithEnv` / `PrependPath`）、种子白名单判定
+  （`bundle.SeedAllow` / `SeedIgnored`）等跨包共用的逻辑只保留一份。
 - 文件以单个换行结尾。
 
 ## 测试约定
 
 - 测试位于各包 `*_test.go`（`go test ./...`）。
-- 不依赖外部服务；需要真实 pnpm / node 的路径（如 SEA 打包）由
-  `shell_e2e_test.go` 显式标记，本地无工具链时跳过。
+- 不依赖外部服务；需要真实 pnpm / node 的路径（如 SEA 打包、壳构建）
+  由 `shell_e2e_test.go` 显式标记，本地无工具链时跳过。
+- 并发代码（如 `sharedstore`）的测试用 `go test -race` 验证。
+- 跨包契约（如 appconfig.json 的打包/读取两侧）在两侧各测，字段变更
+  必须同步。
 
 ## 发布
 

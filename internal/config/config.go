@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/omdsh-dev/dsh-web-desktopify/internal/fsutil"
 )
 
 // ProfileName 是 desktop 唯一支持的 dsh profile 名。
@@ -129,20 +131,10 @@ func BundleRoot(ws string) string {
 // apps/dsh-custom 在仓库根有 pnpm-workspace.yaml）时，依赖闭包与 dsh
 // 主包都安装在根 node_modules（hoisted），dev/plugin/bundle 需从根解析。
 func WorkspaceRoot(ws string) string {
-	dir, err := filepath.Abs(ws)
-	if err != nil {
-		return ws
+	if root := fsutil.FindUp(ws, "pnpm-workspace.yaml"); root != "" {
+		return root
 	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "pnpm-workspace.yaml")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return ws
-		}
-		dir = parent
-	}
+	return ws
 }
 
 func sanitizeID(s string) string {

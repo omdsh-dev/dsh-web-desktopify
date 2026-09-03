@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
@@ -25,7 +26,7 @@ type Store struct {
 	mu       sync.Mutex
 	state    map[string]string
 	order    []string
-	saveTail chan struct{} // 串行写盘队列信号
+	saveTail chan struct{} // 串行写盘队列信号（持锁读写）
 }
 
 // New 创建 Store（不读盘；Load 由调用方在挂载前调用）。
@@ -110,9 +111,7 @@ func (s *Store) Snapshot() (map[string]string, []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	state := make(map[string]string, len(s.state))
-	for k, v := range s.state {
-		state[k] = v
-	}
+	maps.Copy(state, s.state)
 	order := append([]string(nil), s.order...)
 	return state, order
 }
@@ -131,8 +130,6 @@ func (s *Store) Flush() {
 func (s *Store) persist() {
 	s.mu.Lock()
 	raw := s.marshalLocked()
-	s.mu.Unlock()
-
 	next := make(chan struct{})
 	prev := s.saveTail
 	if prev == nil {
@@ -140,6 +137,8 @@ func (s *Store) persist() {
 		close(prev)
 	}
 	s.saveTail = next
+	s.mu.Unlock()
+
 	go func() {
 		<-prev
 		defer close(next)

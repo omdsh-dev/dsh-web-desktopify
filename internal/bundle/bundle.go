@@ -1,10 +1,10 @@
 // Package bundle 把 SEA 产物、壳二进制与构建出的 DSH_HOME 装配为平台
 // 桌面应用。全部产物在 node_modules/.dsh-web-desktopify/ 下
-// （CLI 分步缓存 cache/<step>/<digest>/ 的 assemble 步）：
+// （CLI 构建 DAG 的 cache/<digest>/ 产物，见 internal/build）：
 //
-//	macOS   .../cache/assemble/<dg>/<Name>.app/Contents/{MacOS,Resources,config,node_modules,package.json,dsh-home,Info.plist}
-//	Linux   .../cache/assemble/<dg>/<Name>/{bin,config,node_modules,package.json,dsh-home,share/icons/hicolor}
-//	Windows .../cache/assemble/<dg>/<Name>/{bin,config,node_modules,package.json,dsh-home,dsh.ico}
+//	macOS   .../cache/<dg>/<Name>.app/Contents/{MacOS,Resources,config,node_modules,package.json,dsh-home,Info.plist}
+//	Linux   .../cache/<dg>/<Name>/{bin,config,node_modules,package.json,dsh-home,share/icons/hicolor}
+//	Windows .../cache/<dg>/<Name>/{bin,config,node_modules,package.json,dsh-home,dsh.ico}
 //
 // dsh-home 是打包进应用的 DSH_HOME 种子，壳在运行时按 appconfig 的
 // dshHome 策略落位（xdg 数据目录 / 固定路径 / 继承环境）。
@@ -21,6 +21,7 @@ import (
 
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/config"
 	"github.com/omdsh-dev/dsh-web-desktopify/internal/fsutil"
+	"github.com/omdsh-dev/dsh-web-desktopify/pkg/shell/appconfig"
 )
 
 // SeedAllow 构造 DSH_HOME 种子的文件白名单判定。白名单 = package.json +
@@ -55,28 +56,48 @@ func SeedAllow(files []string) func(rel string, isDir bool) bool {
 	}
 }
 
-// appConfig 与壳的 appconfig.json 结构一致（壳读取）。
-type appConfig struct {
-	Name    string `json:"name"`
-	ID      string `json:"id"`
-	Version string `json:"version"`
-	Window  struct {
-		Width     int `json:"width"`
-		Height    int `json:"height"`
-		MinWidth  int `json:"minWidth"`
-		MinHeight int `json:"minHeight"`
-	} `json:"window"`
-	Profile string `json:"profile"`
-	DSHHome string `json:"dshHome"`
+// SeedIgnored 构造 DSH_HOME 种子复制 / 工作区 hash 的忽略判定：白名单外
+// 一律忽略，node_modules 单独排除（由 ClosureFingerprint 单独指纹，且
+// 种子不带 node_modules——dsh 运行时从安装闭包解析 bundle 依赖）。
+func SeedIgnored(files []string) func(rel string, isDir bool) bool {
+	allow := SeedAllow(files)
+	return func(rel string, isDir bool) bool {
+		if rel == "node_modules" || strings.HasPrefix(rel, "node_modules/") {
+			return true
+		}
+		return !allow(rel, isDir)
+	}
 }
+
+// appConfig 与壳的 appconfig.json 结构一致（壳读取）。
+type appConfig = appconfig.Config
+
+// SeaOutput 是 bundle 对 SEA 产物（internal/sea.Output）的消费侧接口：
+// 装配只依赖 Bin() 与资源目录，不依赖 SEA 的目录布局实现。
+type SeaOutput interface {
+	// Dir 返回 SEA 产物根目录。
+	Dir() string
+	// Bin 返回 SEA 可执行文件路径（平台相关扩展名）。
+	Bin() string
+}
+
+// Output 是平台组装产物（应用根目录）。
+type Output struct{ dir string }
+
+// NewOutput 构造平台组装产物。
+func NewOutput(dir string) Output { return Output{dir: dir} }
+
+// Dir 返回应用根目录（macOS 为 .app 的 Contents，Linux/Windows 为
+// <Name>/）。
+func (o Output) Dir() string { return o.dir }
 
 // Inputs 是一次装配的全部输入。
 type Inputs struct {
 	Workspace string // 工作区（图标源与 DSH_HOME 种子来源）
 	Cfg       *config.Config
-	SeaDir    string // SEA 产物目录（bin/dsh、config/、node_modules/、package.json）
-	ShellBin  string // 壳二进制
-	SeedHash  string // 工作区内容 hash（写入种子的 .seed-hash 指纹，壳启动时比对）
+	Sea       SeaOutput // SEA 产物（bin/dsh、config/、node_modules/、package.json）
+	ShellBin  string    // 壳二进制
+	SeedHash  string    // 工作区内容 hash（写入种子的 .seed-hash 指纹，壳启动时比对）
 }
 
 // BinNames 返回壳与后端文件名（平台相关扩展名）。
@@ -102,11 +123,7 @@ func assembleLayout(in Inputs, appRoot string) (string, error) {
 		return "", fmt.Errorf("copy shell: %w", err)
 	}
 	// SEA 产物里可执行名为 bin/dsh（SEA 打包约定），复制到 bin/ 时改名。
-	seaBin := filepath.Join(in.SeaDir, "bin", "dsh")
-	if runtime.GOOS == "windows" {
-		seaBin += ".exe"
-	}
-	if err := fsutil.CopyFile(seaBin, filepath.Join(binDir, serverName)); err != nil {
+	if err := fsutil.CopyFile(in.Sea.Bin(), filepath.Join(binDir, serverName)); err != nil {
 		return "", fmt.Errorf("copy dsh-server: %w", err)
 	}
 	if runtime.GOOS != "windows" {
@@ -127,7 +144,7 @@ func assembleLayout(in Inputs, appRoot string) (string, error) {
 	// agent-presets 的 presets 移入 @deepseek-ai/dsh-agent-presets 包），
 	// 存在才复制。
 	for _, name := range []string{"config", "node_modules", "package.json"} {
-		src := filepath.Join(in.SeaDir, name)
+		src := filepath.Join(in.Sea.Dir(), name)
 		if _, err := os.Stat(src); err != nil {
 			if os.IsNotExist(err) && name == "config" {
 				continue
@@ -148,15 +165,8 @@ func assembleLayout(in Inputs, appRoot string) (string, error) {
 	if err := os.MkdirAll(filepath.Join(homeRoot, "profiles"), 0o755); err != nil {
 		return "", err
 	}
-	allow := SeedAllow(in.Cfg.Files)
-	seedIgnored := func(rel string, isDir bool) bool {
-		if rel == "node_modules" || strings.HasPrefix(rel, "node_modules/") {
-			return true
-		}
-		return !allow(rel, isDir)
-	}
 	fmt.Printf("==>    DSH_HOME 种子（白名单: package.json, files=%v）\n", in.Cfg.Files)
-	if err := fsutil.CopyDirDeref(in.Workspace, profileDir, nil, seedIgnored); err != nil {
+	if err := fsutil.CopyDirDeref(in.Workspace, profileDir, nil, SeedIgnored(in.Cfg.Files)); err != nil {
 		return "", fmt.Errorf("copy dsh-home seed: %w", err)
 	}
 	// 种子指纹：工作区内容 hash，壳启动时比对，避免每次全量复制闭包。
@@ -171,16 +181,17 @@ func assembleLayout(in Inputs, appRoot string) (string, error) {
 
 // writeAppConfig 生成壳同目录的 appconfig.json。
 func writeAppConfig(binDir string, cfg *config.Config) error {
-	var ac appConfig
-	ac.Name = cfg.Name
-	ac.ID = cfg.Desktop.ID
-	ac.Version = cfg.Version
+	ac := appconfig.Config{
+		Name:    cfg.Name,
+		ID:      cfg.Desktop.ID,
+		Version: cfg.Version,
+		Profile: config.ProfileName,
+		DSHHome: cfg.Desktop.DSHHome,
+	}
 	ac.Window.Width = cfg.Desktop.Window.Width
 	ac.Window.Height = cfg.Desktop.Window.Height
 	ac.Window.MinWidth = cfg.Desktop.Window.MinWidth
 	ac.Window.MinHeight = cfg.Desktop.Window.MinHeight
-	ac.Profile = config.ProfileName
-	ac.DSHHome = cfg.Desktop.DSHHome
 	raw, err := json.MarshalIndent(ac, "", "  ")
 	if err != nil {
 		return err
@@ -190,7 +201,7 @@ func writeAppConfig(binDir string, cfg *config.Config) error {
 
 // Assemble 按当前平台组装应用，把产物写进 dst 目录（调用方提供的暂存
 // 目录，完成后由调用方发布进缓存）。
-func Assemble(in Inputs, dst string) error {
+func Assemble(in Inputs, dst string) (Output, error) {
 	switch runtime.GOOS {
 	case "darwin":
 		return assembleMacOS(in, dst)
@@ -199,6 +210,6 @@ func Assemble(in Inputs, dst string) error {
 	case "windows":
 		return assembleWindows(in, dst)
 	default:
-		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
+		return Output{}, fmt.Errorf("unsupported platform: %s", runtime.GOOS)
 	}
 }

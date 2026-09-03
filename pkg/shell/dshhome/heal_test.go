@@ -106,7 +106,7 @@ func TestHealBundleFallbackIdempotent(t *testing.T) {
 	home := makeHome(t, []string{"@scope/bundle"})
 	exeDir := filepath.Join(closure, "MacOS")
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if err := HealBundleFallback(home, "web", exeDir); err != nil {
 			t.Fatalf("第 %d 次应成功: %v", i+1, err)
 		}
