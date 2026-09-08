@@ -55,6 +55,11 @@ func (o Output) Bin() string {
 // createRequire 从文件系统加载后，其动态 import() 走正常 Node ESM
 // loader（blob 内模块的 import() 受 SEA 限制），加载 dsh CLI 及其含
 // 顶层 await 的依赖图。
+//
+// dsh CLI 入口（lib/bin.js）以 `if (import.meta.main) await runCli()`
+// 自启动，而 import.meta.main 只对「程序入口模块」为真——经桥动态 import
+// 的模块不是入口，CLI 会静默退出（exit 0、无任何输出），壳等不到
+// `dsh web:` 就绪行而无限重试。因此桥必须显式调用其导出的 runCli。
 const bridgePkgJSON = `{
   "name": "dsh-bridge",
   "version": "0.0.0",
@@ -66,15 +71,24 @@ const bridgePkgJSON = `{
 const bridgeIndex = `// dsh SEA 外部桥（dsh-web-desktopify 生成）：经 createRequire
 // 从可执行文件旁 node_modules 加载的 CJS 模块，其 import() 走正常 Node
 // ESM loader，加载 dsh CLI（lib/bin.js）及含顶层 await 的依赖图。
+// 动态 import 的模块不是程序入口（import.meta.main === false），
+// dsh CLI 不会自启动，必须显式调用其导出的 runCli。
 'use strict';
 const { pathToFileURL } = require('node:url');
 const { createRequire } = require('node:module');
 const require2 = createRequire(__filename);
 const bin = require2.resolve('@deepseek-ai/dsh/lib/bin.js');
-import(pathToFileURL(bin).href).catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+import(pathToFileURL(bin).href)
+  .then((mod) => {
+    if (typeof mod.runCli !== 'function') {
+      throw new Error('dsh-bridge: ' + bin + ' 未导出 runCli（dsh 版本不兼容）');
+    }
+    return mod.runCli();
+  })
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
 `
 
 // writeBridge 向闭包写入 dsh-bridge 伪包。

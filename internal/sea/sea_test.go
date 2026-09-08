@@ -80,6 +80,15 @@ func TestWriteBridge(t *testing.T) {
 	if !strings.Contains(string(raw), `"type": "commonjs"`) {
 		t.Errorf("桥应为 CJS 模块: %s", raw)
 	}
+	// dsh CLI 的 import.meta.main 对动态 import 的模块为 false，桥必须显式
+	// 调用 runCli；否则后端静默退出、壳永远等不到就绪 URL。
+	idx, err := os.ReadFile(filepath.Join(dir, "index.cjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(idx), "runCli()") {
+		t.Errorf("桥必须显式调用 runCli: %s", idx)
+	}
 }
 
 func TestCheckBareImports(t *testing.T) {

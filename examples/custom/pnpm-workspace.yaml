@@ -3,9 +3,10 @@ nodeLinker: hoisted
 minimumReleaseAge: 0
 
 allowBuilds:
-  "@deepseek-ai/dsh-subprocess-local": true
+  '@deepseek-ai/dsh-subprocess-local': true
   "@google/genai": true
   esbuild: true
+  fs-ext: true
   koffi: true
   node-pty: true
   protobufjs: true
