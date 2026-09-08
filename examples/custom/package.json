@@ -3,8 +3,8 @@
   "version": "0.1.3",
   "private": true,
   "dependencies": {
-    "@morlay/better-session": "^0.0.16-alpha.0",
-    "@morlay/dsh-llm-openai-compatible": "^0.0.4-alpha.0"
+    "@morlay/better-session": "^0.0.16-alpha.1",
+    "@morlay/dsh-llm-openai-compatible": "^0.0.4-alpha.1"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh": "0.1.3-alpha.2",
